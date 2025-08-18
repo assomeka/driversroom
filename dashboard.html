@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Driver's Room - ESTACUP</title>
+  <link rel="stylesheet" href="style.css" />
+  <script type="module" src="dashboard.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <img src="meka.svg" alt="Logo MEKA" class="site-logo" />
+  </header>
+
+  <div class="container">
+    <h2>Driver's Room</h2>
+
+    <!-- Menu de navigation -->
+    <nav class="menu">
+      <button data-section="infos">Infos</button>
+      <button data-section="results">Résultats</button>
+      <button data-section="erating">E-Rating</button>
+      <button data-section="esafety">E-Safety</button>
+      <button data-section="estacup">ESTACUP</button>
+      <button id="goToAdmin" class="hidden">Espace admin</button>
+      <button id="logout" class="logout">Déconnexion</button>
+    </nav>
+
+    <!-- Section Infos -->
+    <section id="section-infos" class="section">
+      <h3>Informations du pilote</h3>
+      <p><strong>Nom :</strong> <span id="fullName"></span></p>
+      <p><strong>Date de naissance :</strong> <span id="dob"></span></p>
+      <p><strong>Licence ID :</strong> <span id="licenseId"></span></p>
+
+      <h4 style="margin-top:16px">Stats</h4>
+      <ul class="pilot-stats">
+        <li><strong>Départs :</strong> <span id="statStarts">0</span></li>
+        <li><strong>Meilleur résultat :</strong> <span id="statBest">—</span></li>
+        <li><strong>Victoires :</strong> <span id="statWins">0</span></li>
+        <li><strong>Podiums (Top 3) :</strong> <span id="statTop3">0</span></li>
+        <li><strong>Top 5 :</strong> <span id="statTop5">0</span></li>
+        <li><strong>Top 10 :</strong> <span id="statTop10">0</span></li>
+        <li><strong>Position moyenne :</strong> <span id="statAvg">—</span></li>
+      </ul>
+    </section>
+
+    <!-- Section Résultats -->
+    <section id="section-results" class="section hidden">
+      <h3>Résultats</h3>
+      <ul id="raceHistory"><li>Chargement...</li></ul>
+    </section>
+
+    <!-- Section E-Rating -->
+    <section id="section-erating" class="section hidden">
+      <h3>E-Rating</h3>
+      <p><strong>Classement ELO :</strong> <span id="eloRating"></span></p>
+    </section>
+
+    <!-- Section E-Safety -->
+    <section id="section-esafety" class="section hidden">
+      <h3>E-Safety</h3>
+      <p><strong>Points de licence (E-Safety) :</strong> <span id="licensePoints"></span></p>
+    </section>
+
+    <!-- Section ESTACUP -->
+    <section id="section-estacup" class="section hidden">
+      <h3>ESTACUP</h3>
+
+      <!-- Sous-partie Inscription -->
+      <div class="estacup-subsection">
+        <h4>Inscription ESTACUP</h4>
+        <div id="estacupFormContainer"></div>
+      </div>
+
+      <!-- Sous-partie Liste des engagés -->
+      <div class="estacup-subsection" style="margin-top: 30px;">
+        <h4>Liste des engagés</h4>
+        <div id="estacupEngages"></div>
+      </div>
+    </section>
+  </div>
+</body>
+</html>

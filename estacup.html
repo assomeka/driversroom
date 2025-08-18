@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <title>ESTACUP • Inscription</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>ESTACUP • Inscription pilote</h1>
+      <div class="toolbar">
+        <a class="badge" href="dashboard.html">Mon espace</a>
+        <a class="badge" href="admin.html">Admin</a>
+        <button id="logout">Se déconnecter</button>
+      </div>
+    </div>
+
+    <!-- ✅ Bloc résumé si déjà inscrit -->
+    <div id="alreadyBlock" class="card hidden">
+      <h3>Inscription trouvée</h3>
+      <p id="alreadyText" class="small"></p>
+      <div class="toolbar">
+        <button id="btnEdit">Modifier mon inscription</button>
+        <button id="btnCancelEdit" class="hidden">Annuler</button>
+      </div>
+    </div>
+
+    <!-- ✅ Formulaire (masqué par défaut pour éviter le “flash”) -->
+    <div id="formCard" class="card hidden">
+      <h3 id="formTitle">Nouvelle inscription</h3>
+
+      <div class="grid grid-2">
+        <div class="grid">
+          <label>Prénom</label>
+          <input id="firstName" />
+        </div>
+        <div class="grid">
+          <label>Nom</label>
+          <input id="lastName" />
+        </div>
+        <div class="grid">
+          <label>Âge</label>
+          <input id="age" type="number" min="10" />
+        </div>
+        <div class="grid">
+          <label>Email</label>
+          <input id="email" />
+        </div>
+        <div class="grid">
+          <label>Équipe</label>
+          <input id="teamName" placeholder="Optionnel" />
+        </div>
+        <div class="grid">
+          <label>Voiture</label>
+          <input id="carChoice" />
+        </div>
+        <div class="grid">
+          <label>N° de course</label>
+          <input id="raceNumber" type="number" min="1" max="999" />
+          <div class="num-grid" id="takenNumbers"></div>
+        </div>
+        <div class="grid">
+          <label>Livrée</label>
+          <select id="liveryChoice">
+            <option>Livrée perso</option>
+            <option>Livrée semi-perso</option>
+            <option>Livrée MEKA</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Couleurs visibles seulement si “semi-perso” -->
+      <div id="colors" class="color-row hidden" style="margin-top:10px">
+        <div class="color-cell">
+          <span>Couleur 1</span><div class="color-square"></div><input type="color" id="color1" value="#000000"/>
+        </div>
+        <div class="color-cell">
+          <span>Couleur 2</span><div class="color-square"></div><input type="color" id="color2" value="#01234A"/>
+        </div>
+        <div class="color-cell">
+          <span>Couleur 3</span><div class="color-square"></div><input type="color" id="color3" value="#6BDAEC"/>
+        </div>
+      </div>
+
+      <div class="toolbar" style="margin-top:12px">
+        <button id="btnSave">💾 Enregistrer</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ✅ JS dédié -->
+  <script type="module" src="estacup.js"></script>
+</body>
+</html>

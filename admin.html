@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Admin - ESTACUP</title>
+  <link rel="stylesheet" href="style.css" />
+  <script type="module" src="admin.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <img src="meka.svg" alt="Logo MEKA" class="site-logo" />
+  </header>
+  <div class="container">
+    <h2>Interface administrateur</h2>
+
+    <div id="adminOnly" class="hidden">
+      <p>Bienvenue, <span id="adminName"></span></p>
+
+      <!-- Menu admin -->
+      <nav class="admin-menu" style="display:flex;gap:10px;margin-bottom:20px;">
+        <button data-section="results"> Création Résultats</button>
+        <button data-section="incidents">Gestion Incidents</button>
+        <button data-section="courses">Liste des Courses</button>
+        <button data-section="estacup">Gestion ESTACUP</button>
+      </nav>
+
+      <!-- Section Résultats -->
+      <section id="section-results" class="admin-section hidden">
+        <h3>Résultats de course</h3>
+        <input type="text" id="raceName" placeholder="Nom de la course" required />
+        <input type="date" id="raceDate" required />
+        <div class="pilot-section">
+          <div>
+            <h4>Pilotes enregistrés</h4>
+            <ul id="pilotList" class="pilot-list"></ul>
+          </div>
+          <div>
+            <h4>Classement (ordre de clic)</h4>
+            <ol id="rankingList" class="ranking-list"></ol>
+          </div>
+        </div>
+        <button id="submitResults">Valider le classement</button>
+      </section>
+
+      <!-- Section Pilotes (supprimée par JS si besoin) -->
+      <section id="section-pilots" class="admin-section hidden">
+        <h3>Ajouter un nouveau pilote</h3>
+        <form id="newPilotForm">
+          <input type="text" id="newFirstName" placeholder="Prénom" required />
+          <input type="text" id="newLastName" placeholder="Nom" required />
+          <button type="submit">Créer le pilote</button>
+        </form>
+      </section>
+
+     <!-- Section Incidents — simplifiée -->
+<section id="section-incidents" class="admin-section hidden">
+  <h3>Incidents / Réclamations</h3>
+
+  <div style="display:grid;gap:10px;grid-template-columns:1fr auto;">
+    <div>
+      <label for="incidentPilotSelect">Pilote impliqué :</label>
+      <select id="incidentPilotSelect"></select>
+    </div>
+    <div style="align-self:end">
+      <button type="button" id="addIncidentPilot">➕ Ajouter</button>
+    </div>
+  </div>
+
+  <!-- Liste simple des pilotes -->
+  <ul id="incidentList" class="incident-list"></ul>
+
+  <label for="incidentRaceSelect" style="margin-top:16px;display:block">Course concernée :</label>
+  <select id="incidentRaceSelect"></select>
+
+  <textarea id="incidentDescription" placeholder="Description de l'incident" rows="3" style="margin-top:10px"></textarea>
+
+  <div style="margin-top:10px">
+    <button type="button" id="submitIncident">✅ Enregistrer l'incident</button>
+  </div>
+
+  <div id="incidentHistory" style="margin-top:24px"></div>
+</section>
+
+      <!-- Section Courses -->
+      <section id="section-courses" class="admin-section hidden">
+        <h3>Courses enregistrées</h3>
+        <div id="courseList"></div>
+      </section>
+
+      <!-- Section ESTACUP -->
+      <section id="section-estacup" class="admin-section hidden">
+        <h3>Inscriptions ESTACUP</h3>
+        <div id="estacupList"></div>
+      </section>
+
+      <button id="goToDashboard">Retour à la driver's room</button>
+    </div>
+
+    <p id="notAdmin" class="error hidden">Accès refusé : compte non administrateur.</p>
+    <button id="logout">Déconnexion</button>
+  </div>
+</body>
+</html>
