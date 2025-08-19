@@ -67,16 +67,67 @@
     <section id="section-estacup" class="section hidden">
       <h3>ESTACUP</h3>
 
+      <!-- ✅ Sous-menu ESTACUP -->
+      <nav class="menu" id="estacupSubnav" style="margin-top:-10px;margin-bottom:20px;">
+        <button data-sub="inscription" class="estc-sub-btn">Inscription</button>
+        <button data-sub="engages" class="estc-sub-btn">Liste des engagés</button>
+        <button data-sub="reclam" class="estc-sub-btn">Réclamation</button>
+      </nav>
+
       <!-- Sous-partie Inscription -->
-      <div class="estacup-subsection">
+      <div id="estacup-sub-inscription" class="estacup-subsection">
         <h4>Inscription ESTACUP</h4>
-        <div id="estacupFormContainer"></div>
+
+        <!-- ✅ Étape questionnaire -->
+        <div id="mekaQuestionnaire">
+          <p style="margin-bottom:10px;">
+            ℹ️ L’inscription est <strong>gratuite</strong> pour les membres MEKA.<br>
+            Pour les non-membres, une participation de <strong>5 €</strong> est demandée.
+          </p>
+
+          <label for="mekaPaid">Êtes‑vous membre MEKA ou avez‑vous déjà payé les 5 € d’inscription ?</label>
+          <select id="mekaPaid">
+            <option value="">-- Choisir --</option>
+            <option value="yes">Oui</option>
+            <option value="no">Non</option>
+          </select>
+
+          <div id="mekaNextStep" style="margin-top:15px;"></div>
+        </div>
+
+        <!-- ✅ Formulaire caché par défaut (dévoilé si "Oui") -->
+        <div id="estacupFormContainer" class="hidden"></div>
       </div>
 
       <!-- Sous-partie Liste des engagés -->
-      <div class="estacup-subsection" style="margin-top: 30px;">
+      <div id="estacup-sub-engages" class="estacup-subsection hidden">
         <h4>Liste des engagés</h4>
         <div id="estacupEngages"></div>
+      </div>
+
+      <!-- Sous-partie Réclamation (saisie manuelle) -->
+      <div id="estacup-sub-reclam" class="estacup-subsection hidden">
+        <h4>Réclamation</h4>
+
+        <label for="reclamCourse">Course concernée (saisie manuelle) :</label>
+        <input id="reclamCourse" type="text" placeholder="Ex. : Sprint Monza Split B • 12/10/2025" />
+
+        <label for="reclamPilotsText">Pilote(s) concerné(s) (saisie manuelle) :</label>
+        <input id="reclamPilotsText" type="text" placeholder="Ex. : Dupont Paul (#27), Martin Lea (#14)" />
+
+        <label for="reclamMoment">Moment de l'incident (n° du tour, virage) :</label>
+        <input id="reclamMoment" type="text" placeholder="Ex. : Tour 8, Variante della Roggia (T4/T5)" />
+
+        <label for="reclamDesc">Description de l'incident :</label>
+        <textarea id="reclamDesc" placeholder="Décrivez précisément l'incident..." rows="5"></textarea>
+
+        <button id="submitReclam">📨 Envoyer la réclamation</button>
+
+        <p class="livery-intro" style="margin-top:12px;">
+          ℹ️ <strong>Note :</strong> la décision des commissaires sera visible prochainement dans la partie <strong>E‑Safety</strong>.
+        </p>
+
+        <div id="reclamHistory" style="margin-top:20px;"></div>
       </div>
     </section>
   </div>

@@ -3,7 +3,8 @@
 // - "Déconnexion" en rouge (fond plein)
 // - Création de pilote retirée
 // - Onglet "Résultats" affiché par défaut
-// - Incidents: liste simple par pilote avec boutons − / +
+// - Incidents: liste simple par pilote avec champs numériques
+// - ➕ Réclamations (collection "reclamations") visibles et éditables dans l’onglet Incidents
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
@@ -58,6 +59,7 @@ onAuthStateChanged(auth, async (user) => {
   loadCourses();
   loadIncidentHistory();
   loadEstacupSignups();
+  loadReclamations();            // ✅ affiche les réclamations
 });
 
 /* ---------------- Navigation ---------------- */
@@ -69,6 +71,22 @@ function setupNavigation() {
     sections.forEach((s) => s.classList.add("hidden"));
     const el = document.getElementById(`section-${key}`);
     if (el) el.classList.remove("hidden");
+
+    // rafraîchissements contextuels
+    if (key === "incidents") {
+      loadReclamations();
+      loadIncidentHistory();
+      // courses déjà chargées mais utile pour liste déroulante
+      loadCourses();
+      // pilotes pour la sélection rapide
+      loadPilots();
+    }
+    if (key === "estacup") {
+      loadEstacupSignups();
+    }
+    if (key === "courses") {
+      loadCourses();
+    }
   }
 
   buttons.forEach((btn) => {
@@ -234,7 +252,7 @@ function calculateDynamicElo(rankingArr, allData, K = 32) {
   return result;
 }
 
-/* ---------------- Incidents (UI simple − / +) ---------------- */
+/* ---------------- Incidents (UI simple − champs numériques) ---------------- */
 document.getElementById("addIncidentPilot")?.addEventListener("click", async () => {
   const select = document.getElementById("incidentPilotSelect");
   const uid = select?.value;
@@ -278,7 +296,6 @@ function updateIncidentList() {
     });
   });
 }
-
 
 document.getElementById("submitIncident")?.addEventListener("click", async () => {
   const description = document.getElementById("incidentDescription")?.value.trim();
@@ -484,6 +501,120 @@ window.deleteIncident = async function (id) {
   await deleteDoc(ref);
   loadIncidentHistory();
 };
+
+/* ---------------- Réclamations (depuis dashboard) ---------------- */
+// Affiche toutes les réclamations + permet de changer le statut / noter / supprimer
+async function loadReclamations() {
+  const box = document.getElementById("reclamationsBox");
+  if (!box) return;
+  box.innerHTML = "<p class='loading'>Chargement…</p>";
+
+  const snap = await getDocs(collection(db, "reclamations"));
+  if (snap.empty) {
+    box.innerHTML = "<p>Aucune réclamation pour l’instant.</p>";
+    return;
+  }
+
+  // tri anti-chronologique
+  const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+
+  box.innerHTML = "";
+  for (const r of rows) {
+    // cherche le nom du plaignant (uid → users)
+    let author = r.uid || "";
+    try {
+      const u = await getDoc(doc(db, "users", r.uid));
+      if (u.exists()) {
+        const ud = u.data();
+        author = `${ud.firstName || ""} ${ud.lastName || ""}`.trim() || r.uid;
+      }
+    } catch {}
+
+    const div = document.createElement("div");
+    div.className = "incident-entry";
+    const when = r.date ? new Date(r.date).toLocaleString() : "-";
+
+    const note = r.adminNote || "";
+    const status = r.status || "pending";
+
+    div.innerHTML = `
+      <p><strong>${when}</strong> — <em>${statusLabel(status)}</em></p>
+      <p><strong>Plaignant :</strong> ${author}</p>
+      <p><strong>Course :</strong> ${r.courseText || "-"}</p>
+      <p><strong>Pilote(s) :</strong> ${r.pilotsText || "-"}</p>
+      <p><strong>Moment :</strong> ${r.momentText || "-"}</p>
+      <p style="margin-top:6px">${r.description || ""}</p>
+
+      <div style="display:grid;grid-template-columns:1fr;gap:8px;margin-top:12px">
+        <label>Statut :
+          <select class="reclam-status" data-id="${r.id}">
+            ${renderStatusOption("pending", status, "En cours")}
+            ${renderStatusOption("in_review", status, "À l’étude")}
+            ${renderStatusOption("accepted", status, "Acceptée")}
+            ${renderStatusOption("rejected", status, "Rejetée")}
+          </select>
+        </label>
+        <label>Note admin :
+          <textarea class="reclam-note" data-id="${r.id}" rows="2" placeholder="Ajouter une note (optionnel)">${escapeHtml(note)}</textarea>
+        </label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="reclam-save" data-id="${r.id}">💾 Enregistrer</button>
+          <button class="reclam-del" data-id="${r.id}">🗑️ Supprimer</button>
+        </div>
+      </div>
+    `;
+    box.appendChild(div);
+  }
+
+  // handlers
+  box.querySelectorAll(".reclam-save").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.id;
+      const statusSel = box.querySelector(`.reclam-status[data-id="${id}"]`);
+      const noteTa = box.querySelector(`.reclam-note[data-id="${id}"]`);
+      const payload = {
+        status: statusSel?.value || "pending",
+        adminNote: noteTa?.value || "",
+        adminUid: auth.currentUser?.uid || null,
+        adminUpdatedAt: new Date().toISOString()
+      };
+      await updateDoc(doc(db, "reclamations", id), payload);
+      alert("Réclamation mise à jour.");
+      loadReclamations();
+    });
+  });
+
+  box.querySelectorAll(".reclam-del").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.id;
+      if (!confirm("Supprimer cette réclamation ?")) return;
+      await deleteDoc(doc(db, "reclamations", id));
+      loadReclamations();
+    });
+  });
+}
+
+function statusLabel(key) {
+  switch (key) {
+    case "pending": return "En cours";
+    case "in_review": return "À l’étude";
+    case "accepted": return "Acceptée";
+    case "rejected": return "Rejetée";
+    default: return key;
+  }
+}
+function renderStatusOption(value, current, label) {
+  return `<option value="${value}" ${current===value?"selected":""}>${label}</option>`;
+}
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;")
+    .replaceAll("'","&#039;");
+}
 
 /* ---------------- Inscriptions ESTACUP ---------------- */
 async function loadEstacupSignups() {

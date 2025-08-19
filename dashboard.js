@@ -1,5 +1,5 @@
 // dashboard.js — Driver's Room : navigation + Résultats + ESTACUP + Stats + DOB
-// (version sans graphiques)
+// + Sous-menu ESTACUP (Inscription / Engagés / Réclamation) + Questionnaire MEKA (version "Êtes-vous membre MEKA ou avez-vous déjà payé les 5 € ?")
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
@@ -37,9 +37,8 @@ const $ = (id) => document.getElementById(id);
 
 function toDate(value) {
   if (!value) return null;
-  if (value?.seconds && typeof value.seconds === "number") return new Date(value.seconds * 1000); // Firestore TS
-  if (typeof value?.toDate === "function") { try { return value.toDate(); } catch {}
-  }
+  if (value?.seconds && typeof value.seconds === "number") return new Date(value.seconds * 1000);
+  if (typeof value?.toDate === "function") { try { return value.toDate(); } catch {} }
   const d = new Date(value);
   return isNaN(d) ? null : d;
 }
@@ -53,7 +52,7 @@ function firstDefined(...vals) {
 }
 
 /* =========================
-   Navigation onglets
+   Navigation onglets (haut)
 ========================= */
 function setupNavigation(isAdmin = false) {
   const goToAdmin = $("goToAdmin");
@@ -71,13 +70,39 @@ function setupNavigation(isAdmin = false) {
     // Rechargements à l’ouverture
     if (key === "results" && currentUid) loadResults(currentUid);
     if (key === "estacup" && lastUserData) {
-      loadEstacupForm(lastUserData);
+      setupEstacupSubnav();
+      showEstacupSub("inscription"); // défaut
+      setupMekaQuestionnaire(lastUserData);
       loadEstacupEngages();
+      loadReclamHistory();
     }
   }
 
   buttons.forEach(btn => btn.addEventListener("click", () => showSection(btn.getAttribute("data-section"))));
   showSection("infos"); // défaut
+}
+
+/* =========================
+   Sous-menu ESTACUP
+========================= */
+function setupEstacupSubnav() {
+  const subnav = $("estacupSubnav");
+  if (!subnav) return;
+
+  const subs = document.querySelectorAll("#estacupSubnav .estc-sub-btn");
+  subs.forEach(btn => {
+    btn.onclick = () => showEstacupSub(btn.dataset.sub);
+  });
+}
+
+function showEstacupSub(key) {
+  const blocks = {
+    inscription: $("estacup-sub-inscription"),
+    engages: $("estacup-sub-engages"),
+    reclam: $("estacup-sub-reclam")
+  };
+  Object.values(blocks).forEach(b => b && b.classList.add("hidden"));
+  if (blocks[key]) blocks[key].classList.remove("hidden");
 }
 
 /* =========================
@@ -118,7 +143,7 @@ onAuthStateChanged(auth, async (user) => {
 
   // Header infos
   $("fullName") && ( $("fullName").textContent = `${data.firstName ?? ""} ${data.lastName ?? ""}`.trim() );
-  $("licenseId") && ( $("licenseId").textContent = data.licenseId || "-" );
+  $("licenseId") && ( $("licenseId").textContent = data.licenceId || data.licenseId || "-" );
   $("eloRating") && ( $("eloRating").textContent = data.eloRating ?? 1000 );
   $("licensePoints") && ( $("licensePoints").textContent = data.licensePoints ?? 10 );
   const dobValue = firstDefined(data.dob, data.birthDate, data.birthday, data.dateNaissance, data.naissance);
@@ -127,15 +152,12 @@ onAuthStateChanged(auth, async (user) => {
   setupNavigation(data.admin === true);
 
   // Pré-chargements utiles
-  await loadResults(currentUid);         // Résultats (liste)
-  await loadPilotStats(currentUid);      // Stats
-  await loadEstacupForm(data);           // ESTACUP (statut / formulaire)
-  await loadEstacupEngages();
+  await loadResults(currentUid);
+  await loadPilotStats(currentUid);
 });
 
 /* =========================
    Résultats (historique courses)
-   → Affiche : "date – nom : position/participants"
 ========================= */
 async function loadResults(uid) {
   const ul = $("raceHistory");
@@ -143,23 +165,20 @@ async function loadResults(uid) {
   try {
     ul.innerHTML = "<li>Chargement…</li>";
 
-    // Courses du pilote
     const snap = await getDocs(collection(db, "users", uid, "raceHistory"));
     if (snap.empty) { ul.innerHTML = "<li>Aucun résultat pour l’instant.</li>"; return; }
 
     const rows = [];
     snap.forEach(d => rows.push({ id: d.id, ...d.data() }));
 
-    // Tri par date décroissante
     rows.sort((a, b) => {
       const da = toDate(a.date) ?? new Date(a.date || 0);
       const dbb = toDate(b.date) ?? new Date(b.date || 0);
       return dbb - da;
     });
 
-    // Calcule "nb participants" par course
     const targetIds = new Set(rows.map(r => r.id));
-    const countMap = {}; // raceId -> count
+    const countMap = {};
     const usersSnap = await getDocs(collection(db, "users"));
     for (const u of usersSnap.docs) {
       const rhSnap = await getDocs(collection(db, "users", u.id, "raceHistory"));
@@ -169,7 +188,6 @@ async function loadResults(uid) {
       });
     }
 
-    // Rendu
     ul.innerHTML = "";
     for (const r of rows) {
       const d = formatDateFR(r.date) || r.date || "";
@@ -186,7 +204,7 @@ async function loadResults(uid) {
 }
 
 /* =========================
-   Stats Pilote (départs, best, wins, top3/5/10, avg)
+   Stats Pilote
 ========================= */
 async function loadPilotStats(uid) {
   const startsEl = $("statStarts");
@@ -237,7 +255,44 @@ async function loadPilotStats(uid) {
 }
 
 /* =========================
-   ESTACUP (statut / formulaire / engagés)
+   ESTACUP — Questionnaire MEKA
+========================= */
+function setupMekaQuestionnaire(userData) {
+  const select = $("mekaPaid");
+  const nextStep = $("mekaNextStep");
+  const formContainer = $("estacupFormContainer");
+  if (!select) return;
+
+  nextStep.innerHTML = "";
+  formContainer.classList.add("hidden");
+  formContainer.innerHTML = "";
+
+  select.onchange = () => {
+    nextStep.innerHTML = "";
+    formContainer.classList.add("hidden");
+    formContainer.innerHTML = "";
+
+    if (select.value === "yes") {
+      formContainer.classList.remove("hidden");
+      loadEstacupForm(userData);
+    } else if (select.value === "no") {
+      nextStep.innerHTML = `
+        <p style="margin-top:10px;">
+          Vous devez choisir une option pour participer à l’ESTACUP :<br><br>
+          <a href="#" style="color:#38bdf8;text-decoration:underline;display:block;margin-bottom:6px;">
+            👉 Payer la cotisation MEKA (l’inscription ESTACUP sera gratuite)
+          </a>
+          <a href="#" style="color:#38bdf8;text-decoration:underline;display:block;">
+            👉 Payer 5 € pour participer uniquement à l’ESTACUP
+          </a>
+        </p>
+      `;
+    }
+  };
+}
+
+/* =========================
+   ESTACUP (formulaire / engagés)
 ========================= */
 async function loadEstacupForm(userData, editing = false) {
   const container = $("estacupFormContainer");
@@ -262,7 +317,7 @@ async function loadEstacupForm(userData, editing = false) {
       </div>
     `;
     container.appendChild(box);
-    $("btnEditSignup").addEventListener("click", () => loadEstacupForm(userData, true));
+    $("btnEditSignup")?.addEventListener("click", () => loadEstacupForm(userData, true));
     return;
   }
 
@@ -285,6 +340,7 @@ async function loadEstacupForm(userData, editing = false) {
   ];
   const initColors = (existing?.liveryChoice === "Livrée semi-perso" && existing?.liveryColors) ? existing.liveryColors : DEFAULT_COLORS;
 
+  // ⚠️ Correction : pas de backslashes devant ${...}
   const form = document.createElement("form");
   form.innerHTML = `
     <input type="text" id="first" value="${existing?.firstName || userData.firstName || ""}" placeholder="Prénom" required>
@@ -392,7 +448,7 @@ async function loadEstacupForm(userData, editing = false) {
 
     alert("Inscription ESTACUP enregistrée !");
     loadEstacupEngages();
-    loadEstacupForm(userData, false); // retour statut
+    loadEstacupForm(userData, false);
   });
 }
 
@@ -430,4 +486,67 @@ async function loadEstacupEngages() {
     `;
     container.appendChild(box);
   });
+}
+
+/* =========================
+   Réclamations (saisie manuelle dans ESTACUP)
+========================= */
+$("submitReclam")?.addEventListener("click", async () => {
+  const courseText = $("reclamCourse")?.value.trim() || "";
+  const pilotsText = $("reclamPilotsText")?.value.trim() || "";
+  const momentText = $("reclamMoment")?.value.trim() || "";
+  const desc = $("reclamDesc")?.value.trim() || "";
+
+  if (!courseText || !pilotsText || !momentText || !desc) {
+    alert("Veuillez renseigner tous les champs (course, pilotes, moment, description).");
+    return;
+  }
+
+  await addDoc(collection(db, "reclamations"), {
+    uid: currentUid,
+    courseText,
+    pilotsText,
+    momentText,
+    description: desc,
+    date: new Date().toISOString(),
+    status: "pending"
+  });
+
+  alert("Réclamation envoyée !");
+  $("reclamCourse").value = "";
+  $("reclamPilotsText").value = "";
+  $("reclamMoment").value = "";
+  $("reclamDesc").value = "";
+  loadReclamHistory();
+});
+
+// Historique des réclamations du pilote connecté
+async function loadReclamHistory() {
+  const box = $("reclamHistory");
+  if (!box) return;
+  box.innerHTML = "<h4>Vos réclamations :</h4>";
+
+  const snap = await getDocs(collection(db, "reclamations"));
+  const mine = snap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .filter(r => r.uid === currentUid)
+    .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  if (mine.length === 0) {
+    box.innerHTML += "<p>Aucune réclamation pour l’instant.</p>";
+    return;
+  }
+
+  for (const r of mine) {
+    const div = document.createElement("div");
+    div.className = "incident-entry";
+    div.innerHTML = `
+      <p><strong>${new Date(r.date).toLocaleString()}</strong> — <em>${r.status === "pending" ? "En cours" : r.status}</em></p>
+      <p><strong>Course :</strong> ${r.courseText}</p>
+      <p><strong>Pilote(s) :</strong> ${r.pilotsText}</p>
+      <p><strong>Moment :</strong> ${r.momentText}</p>
+      <p>${r.description}</p>
+    `;
+    box.appendChild(div);
+  }
 }

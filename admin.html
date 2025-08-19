@@ -53,34 +53,48 @@
         </form>
       </section>
 
-     <!-- Section Incidents — simplifiée -->
-<section id="section-incidents" class="admin-section hidden">
-  <h3>Incidents / Réclamations</h3>
+      <!-- Section Incidents + Réclamations -->
+      <section id="section-incidents" class="admin-section hidden">
+        <h3>Incidents / Réclamations</h3>
 
-  <div style="display:grid;gap:10px;grid-template-columns:1fr auto;">
-    <div>
-      <label for="incidentPilotSelect">Pilote impliqué :</label>
-      <select id="incidentPilotSelect"></select>
-    </div>
-    <div style="align-self:end">
-      <button type="button" id="addIncidentPilot">➕ Ajouter</button>
-    </div>
-  </div>
+        <!-- Sous-bloc : Réclamations reçues (depuis dashboard ESTACUP) -->
+        <div class="course-box" style="margin-bottom:24px">
+          <h4>Réclamations reçues</h4>
+          <div id="reclamationsBox">
+            <!-- rempli par JS -->
+          </div>
+        </div>
 
-  <!-- Liste simple des pilotes -->
-  <ul id="incidentList" class="incident-list"></ul>
+        <!-- Sous-bloc : Saisie d'incident (points de licence) -->
+        <div class="course-box">
+          <h4>Créer / Enregistrer un incident</h4>
 
-  <label for="incidentRaceSelect" style="margin-top:16px;display:block">Course concernée :</label>
-  <select id="incidentRaceSelect"></select>
+          <div style="display:grid;gap:10px;grid-template-columns:1fr auto;">
+            <div>
+              <label for="incidentPilotSelect">Pilote impliqué :</label>
+              <select id="incidentPilotSelect"></select>
+            </div>
+            <div style="align-self:end">
+              <button type="button" id="addIncidentPilot">➕ Ajouter</button>
+            </div>
+          </div>
 
-  <textarea id="incidentDescription" placeholder="Description de l'incident" rows="3" style="margin-top:10px"></textarea>
+          <!-- Liste simple des pilotes -->
+          <ul id="incidentList" class="incident-list"></ul>
 
-  <div style="margin-top:10px">
-    <button type="button" id="submitIncident">✅ Enregistrer l'incident</button>
-  </div>
+          <label for="incidentRaceSelect" style="margin-top:16px;display:block">Course concernée :</label>
+          <select id="incidentRaceSelect"></select>
 
-  <div id="incidentHistory" style="margin-top:24px"></div>
-</section>
+          <textarea id="incidentDescription" placeholder="Description de l'incident" rows="3" style="margin-top:10px"></textarea>
+
+          <div style="margin-top:10px">
+            <button type="button" id="submitIncident">✅ Enregistrer l'incident</button>
+          </div>
+        </div>
+
+        <!-- Historique -->
+        <div id="incidentHistory" style="margin-top:24px"></div>
+      </section>
 
       <!-- Section Courses -->
       <section id="section-courses" class="admin-section hidden">
