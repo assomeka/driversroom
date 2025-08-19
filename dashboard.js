@@ -279,10 +279,10 @@ function setupMekaQuestionnaire(userData) {
       nextStep.innerHTML = `
         <p style="margin-top:10px;">
           Vous devez choisir une option pour participer à l’ESTACUP :<br><br>
-          <a href="#" style="color:#38bdf8;text-decoration:underline;display:block;margin-bottom:6px;">
+          <a href="https://www.helloasso.com/associations/meka/adhesions/inscription-meka-2025-2026" target="_blank" style="color:#38bdf8;text-decoration:underline;display:block;margin-bottom:6px;">
             👉 Payer la cotisation MEKA (l’inscription ESTACUP sera gratuite)
           </a>
-          <a href="#" style="color:#38bdf8;text-decoration:underline;display:block;">
+          <a href="https://www.helloasso.com/associations/meka/evenements/inscription-estacup-saison-9" target="_blank" style="color:#38bdf8;text-decoration:underline;display:block;">
             👉 Payer 5 € pour participer uniquement à l’ESTACUP
           </a>
         </p>
