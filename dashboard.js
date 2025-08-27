@@ -1,5 +1,5 @@
-// dashboard.js — Driver's Room : navigation + Résultats + ESTACUP + Stats + DOB
-// + Sous-menu ESTACUP (Inscription / Engagés / Réclamation) + Questionnaire MEKA (version "Êtes-vous membre MEKA ou avez-vous déjà payé les 5 € ?")
+// dashboard.js — Driver's Room : navigation + Résultats + ESTACUP + Stats + DOB + LicenseClass
+// + Sous-menu ESTACUP (Inscription / Engagés / Réclamation) + Questionnaire MEKA
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
@@ -49,6 +49,12 @@ function formatDateFR(value) {
 function firstDefined(...vals) {
   for (const v of vals) if (v !== undefined && v !== null && v !== "") return v;
   return undefined;
+}
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>"']/g, (c) => {
+    const map = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+    return map[c];
+  });
 }
 
 /* =========================
@@ -142,10 +148,15 @@ onAuthStateChanged(auth, async (user) => {
   lastUserData = data;
 
   // Header infos
-  $("fullName") && ( $("fullName").textContent = `${data.firstName ?? ""} ${data.lastName ?? ""}`.trim() );
+  $("fullName") && ( $("fullName").textContent = `${data.firstName ?? ""} ${data.lastName ?? ""}`.trim() || "—" );
   $("licenseId") && ( $("licenseId").textContent = data.licenceId || data.licenseId || "-" );
   $("eloRating") && ( $("eloRating").textContent = data.eloRating ?? 1000 );
   $("licensePoints") && ( $("licensePoints").textContent = data.licensePoints ?? 10 );
+
+  // ✅ Classe de licence (défaut Rookie)
+  if ($("licenseClass")) $("licenseClass").textContent = data.licenseClass || "Rookie";
+
+  // Date de naissance
   const dobValue = firstDefined(data.dob, data.birthDate, data.birthday, data.dateNaissance, data.naissance);
   $("dob") && ( $("dob").textContent = formatDateFR(dobValue) || "Non renseignée" );
 
@@ -177,6 +188,7 @@ async function loadResults(uid) {
       return dbb - da;
     });
 
+    // Nombre de participants par course (pour affichage pos/total)
     const targetIds = new Set(rows.map(r => r.id));
     const countMap = {};
     const usersSnap = await getDocs(collection(db, "users"));
@@ -311,7 +323,7 @@ async function loadEstacupForm(userData, editing = false) {
     box.innerHTML = `
       <p><strong>Vous êtes déjà inscrit.</strong></p>
       <p>Statut : <span class="status ${existing.validated ? "ok" : "wait"}">${status}</span></p>
-      <p>Voiture : <b>${existing.carChoice || "-"}</b> • N° : <b>${existing.raceNumber ?? "-"}</b></p>
+      <p>Voiture : <b>${escapeHtml(existing.carChoice || "-")}</b> • N° : <b>${existing.raceNumber ?? "-"}</b></p>
       <div class="toolbar" style="margin-top:8px">
         <button id="btnEditSignup">✏️ Modifier mon inscription</button>
       </div>
@@ -340,14 +352,13 @@ async function loadEstacupForm(userData, editing = false) {
   ];
   const initColors = (existing?.liveryChoice === "Livrée semi-perso" && existing?.liveryColors) ? existing.liveryColors : DEFAULT_COLORS;
 
-  // ⚠️ Correction : pas de backslashes devant ${...}
   const form = document.createElement("form");
   form.innerHTML = `
-    <input type="text" id="first" value="${existing?.firstName || userData.firstName || ""}" placeholder="Prénom" required>
-    <input type="text" id="last" value="${existing?.lastName || userData.lastName || ""}" placeholder="Nom" required>
+    <input type="text" id="first" value="${escapeHtml(existing?.firstName || userData.firstName || "")}" placeholder="Prénom" required>
+    <input type="text" id="last" value="${escapeHtml(existing?.lastName || userData.lastName || "")}" placeholder="Nom" required>
     <input type="number" id="age" value="${age ?? ""}" placeholder="Âge" required>
-    <input type="email" id="email" value="${existing?.email || userData.email || ''}" placeholder="Email" required>
-    <input type="text" id="team" value="${existing?.teamName || ''}" placeholder="Équipe (ou espace)">
+    <input type="email" id="email" value="${escapeHtml(existing?.email || userData.email || '')}" placeholder="Email" required>
+    <input type="text" id="team" value="${escapeHtml(existing?.teamName || '')}" placeholder="Équipe (ou espace)">
     <input type="number" id="raceNumber" min="1" max="999" value="${existing?.raceNumber ?? ''}" placeholder="Numéro de course (1-999)" required>
     <div id="takenNumbers" class="taken-numbers"></div>
 
@@ -477,11 +488,11 @@ async function loadEstacupEngages() {
     box.innerHTML = `
       <div class="engage-row">
         <div class="engage-text">
-          <strong>${d.firstName} ${d.lastName}</strong><br>
+          <strong>${escapeHtml(`${d.firstName} ${d.lastName}`)}</strong><br>
           Numéro : ${d.raceNumber}<br>
-          Équipe : ${d.teamName} | Voiture : ${d.carChoice}
+          Équipe : ${escapeHtml(d.teamName || "")} | Voiture : ${escapeHtml(d.carChoice || "")}
         </div>
-        ${src ? `<img src="${src}" alt="${d.carChoice}" class="car-thumb">` : ""}
+        ${src ? `<img src="${src}" alt="${escapeHtml(d.carChoice || "")}" class="car-thumb">` : ""}
       </div>
     `;
     container.appendChild(box);
@@ -541,11 +552,11 @@ async function loadReclamHistory() {
     const div = document.createElement("div");
     div.className = "incident-entry";
     div.innerHTML = `
-      <p><strong>${new Date(r.date).toLocaleString()}</strong> — <em>${r.status === "pending" ? "En cours" : r.status}</em></p>
-      <p><strong>Course :</strong> ${r.courseText}</p>
-      <p><strong>Pilote(s) :</strong> ${r.pilotsText}</p>
-      <p><strong>Moment :</strong> ${r.momentText}</p>
-      <p>${r.description}</p>
+      <p><strong>${new Date(r.date).toLocaleString()}</strong> — <em>${escapeHtml(r.status === "pending" ? "En cours" : r.status)}</em></p>
+      <p><strong>Course :</strong> ${escapeHtml(r.courseText)}</p>
+      <p><strong>Pilote(s) :</strong> ${escapeHtml(r.pilotsText)}</p>
+      <p><strong>Moment :</strong> ${escapeHtml(r.momentText)}</p>
+      <p>${escapeHtml(r.description)}</p>
     `;
     box.appendChild(div);
   }

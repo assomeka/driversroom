@@ -8,26 +8,33 @@
   <script type="module" src="login.js" defer></script>
 </head>
 <body>
-    <header class="site-header">
+  <header class="site-header">
     <img src="meka.svg" alt="Logo MEKA" class="site-logo" />
   </header>
+
   <div class="container">
     <h2>Connexion pilote</h2>
 
     <!-- Connexion -->
-    <form id="loginForm">
-      <input type="email" id="loginEmail" placeholder="Email" required />
-      <input type="password" id="loginPassword" placeholder="Mot de passe" required />
-      <button type="submit">Se connecter</button>
+    <form id="loginForm" autocomplete="on">
+      <input type="email" id="loginEmail" placeholder="Email" autocomplete="email" required />
+      <input type="password" id="loginPassword" placeholder="Mot de passe" autocomplete="current-password" required />
+
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+        <button type="submit">Se connecter</button>
+        <button type="button" id="forgotPassword" class="linklike" style="background:none;border:none;color:#38bdf8;text-decoration:underline;cursor:pointer;padding:0;">
+          Mot de passe oublié ?
+        </button>
+      </div>
     </form>
 
-    <p>Pas encore de compte ?</p>
+    <p class="muted">Pas encore de compte ?</p>
     <button id="showRegister">Créer un compte</button>
 
     <!-- Inscription -->
     <div id="registerSection" class="hidden">
       <h3>Inscription</h3>
-      <form id="registerForm">
+      <form id="registerForm" autocomplete="on">
         <input type="text" id="firstName" placeholder="Prénom" required />
         <input type="text" id="lastName" placeholder="Nom" required />
         <input type="date" id="dob" required />
@@ -39,6 +46,7 @@
     </div>
 
     <p id="error" class="error"></p>
+    <p id="success" class="success"></p>
   </div>
 </body>
 </html>

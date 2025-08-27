@@ -1,10 +1,11 @@
-// ✅ admin.js — complet
+// ✅ admin.js — complet (avec ELO multi-joueurs + recalcul global)
 // - "Driver's Room" (vert) dans la barre du haut
 // - "Déconnexion" en rouge (fond plein)
-// - Création de pilote retirée
 // - Onglet "Résultats" affiché par défaut
 // - Incidents: liste simple par pilote avec champs numériques
-// - ➕ Réclamations (collection "reclamations") visibles et éditables dans l’onglet Incidents
+// - Réclamations visibles et éditables
+// - Gestion Pilotes (édition admin)
+// - ⚡️ Nouveau: ELO multi-joueurs (pairwise) + Recalcul global après suppression de course
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
@@ -33,9 +34,9 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-let ranking = [];
-let selectedPilots = []; // { uid, name, before, after }
-let courseMap = new Map();
+let ranking = [];                // [{ uid, name }]
+let selectedPilots = [];         // { uid, name, before, after }
+let courseMap = new Map();       // courseId -> course doc
 
 onAuthStateChanged(auth, async (user) => {
   if (!user) return (window.location.href = "login.html");
@@ -50,57 +51,19 @@ onAuthStateChanged(auth, async (user) => {
   const nameEl = document.getElementById("adminName");
   if (nameEl) nameEl.textContent = snap.data().firstName || "";
 
-  ensureDriversRoomButton();     // bouton vert
-  ensureRedLogoutButton();       // bouton rouge fond plein
-  removePilotCreationSection();  // pas d'ajout de pilote
+  ensureDriversRoomButton();
+  ensureRedLogoutButton();
+  setupPilotsSection();          // Gestion Pilotes
 
   setupNavigation();             // "Résultats" par défaut
   loadPilots();
   loadCourses();
   loadIncidentHistory();
   loadEstacupSignups();
-  loadReclamations();            // ✅ affiche les réclamations
+  loadReclamations();
 });
 
-/* ---------------- Navigation ---------------- */
-function setupNavigation() {
-  const buttons = document.querySelectorAll(".admin-menu button");
-  const sections = document.querySelectorAll(".admin-section");
-
-  function showSection(key) {
-    sections.forEach((s) => s.classList.add("hidden"));
-    const el = document.getElementById(`section-${key}`);
-    if (el) el.classList.remove("hidden");
-
-    // rafraîchissements contextuels
-    if (key === "incidents") {
-      loadReclamations();
-      loadIncidentHistory();
-      // courses déjà chargées mais utile pour liste déroulante
-      loadCourses();
-      // pilotes pour la sélection rapide
-      loadPilots();
-    }
-    if (key === "estacup") {
-      loadEstacupSignups();
-    }
-    if (key === "courses") {
-      loadCourses();
-    }
-  }
-
-  buttons.forEach((btn) => {
-    btn.addEventListener("click", () => showSection(btn.dataset.section));
-  });
-
-  if (document.getElementById("section-results")) {
-    showSection("results");
-  } else if (buttons[0]) {
-    buttons[0].click();
-  }
-}
-
-/* ---------------- Boutons barre haute ---------------- */
+/* ---------------- Helpers UI ---------------- */
 function ensureDriversRoomButton() {
   document.getElementById("goToDashboard")?.remove();
   const menu = document.querySelector(".admin-menu");
@@ -116,72 +79,48 @@ function ensureDriversRoomButton() {
 }
 
 function ensureRedLogoutButton() {
-  // Supprime toute ancienne version (ex: bas de page)
-  document.querySelectorAll("#logout")?.forEach(el => el.remove());
+  const btn = document.getElementById("logout");
+  if (!btn) return;
+  btn.style.backgroundColor = "#e53935";
+  btn.style.borderColor = "#e53935";
+  btn.style.color = "#fff";
+  btn.style.fontWeight = 600;
+  btn.style.padding = "8px 12px";
+  btn.style.borderRadius = "10px";
+}
 
-  const menu = document.querySelector(".admin-menu");
-  if (!menu) return;
+function setupNavigation() {
+  const buttons = document.querySelectorAll(".admin-menu button");
+  const sections = document.querySelectorAll(".admin-section");
 
-  const btn = document.createElement("button");
-  btn.id = "logout";
-  btn.type = "button";
-  btn.textContent = "Déconnexion";
+  function showSection(key) {
+    sections.forEach((s) => s.classList.add("hidden"));
+    const el = document.getElementById(`section-${key}`);
+    if (el) el.classList.remove("hidden");
 
-  // Rouge fond plein + texte blanc
-  btn.style.setProperty("background-color", "#e53935", "important");
-  btn.style.setProperty("color", "#ffffff", "important");
-  btn.style.setProperty("border-color", "#e53935", "important");
+    if (key === "incidents") {
+      loadReclamations?.();
+      loadIncidentHistory?.();
+      loadCourses?.();
+      loadPilots?.();
+    }
+    if (key === "estacup") loadEstacupSignups?.();
+    if (key === "courses")  loadCourses?.();
+    if (key === "pilots")   document.getElementById("refreshPilots")?.click();
+  }
 
-  btn.addEventListener("click", () => {
-    signOut(auth).then(() => (window.location.href = "login.html"));
+  buttons.forEach((btn) => {
+    btn.addEventListener("click", () => showSection(btn.dataset.section));
   });
 
-  menu.appendChild(btn);
+  if (document.getElementById("section-results")) {
+    showSection("results");
+  } else if (buttons[0]) {
+    buttons[0].click();
+  }
 }
 
-/* ---------------- Retirer la création de pilote ---------------- */
-function removePilotCreationSection() {
-  const pilotsSection = document.getElementById("section-pilots");
-  if (pilotsSection) pilotsSection.remove();
-  const pilotsBtn = document.querySelector('.admin-menu button[data-section="pilots"]');
-  if (pilotsBtn) pilotsBtn.remove();
-  document.getElementById("newPilotForm")?.remove();
-}
-
-/* ---------------- Pilotes (lecture / sélection) ---------------- */
-async function loadPilots() {
-  const pilotList = document.getElementById("pilotList");
-  const select = document.getElementById("incidentPilotSelect");
-  const snap = await getDocs(collection(db, "users"));
-
-  if (pilotList) pilotList.innerHTML = "";
-  if (select) select.innerHTML = "";
-
-  snap.forEach((docu) => {
-    const pilot = docu.data();
-    if (pilotList) {
-      const li = document.createElement("li");
-      li.textContent = `${pilot.firstName || ""} ${pilot.lastName || ""}`.trim();
-      li.classList.add("clickable");
-      li.dataset.uid = docu.id;
-      li.addEventListener("click", () => addToRanking(docu.id, pilot));
-      pilotList.appendChild(li);
-    }
-    if (select) {
-      const opt = document.createElement("option");
-      opt.value = docu.id;
-      opt.textContent = `${pilot.firstName || ""} ${pilot.lastName || ""}`.trim();
-      select.appendChild(opt);
-    }
-  });
-}
-
-function addToRanking(uid, pilot) {
-  if (ranking.find((p) => p.uid === uid)) return;
-  ranking.push({ uid, name: `${pilot.firstName || ""} ${pilot.lastName || ""}`.trim() });
-  renderRanking();
-}
-
+/* ---------------- Classement (clic sur pilotes) ---------------- */
 function renderRanking() {
   const ol = document.getElementById("rankingList");
   if (!ol) return;
@@ -193,7 +132,58 @@ function renderRanking() {
   });
 }
 
-/* ---------------- Résultats & ELO ---------------- */
+/* ---------------- NOUVEAU — Calcul ELO multi-joueurs ---------------- */
+/**
+ * Calcule les nouveaux ELO d’une course en comparant chaque pilote à tous les autres (duels implicites).
+ * @param {Array<{uid:string, name?:string, position?:number}>} rankingArr  - classements (index 0 = 1er si position absente)
+ * @param {Object<string, number>} ratingsMap                               - ELO actuels par uid
+ * @param {number} K                                                        - facteur K global (32 recommandé)
+ * @returns {Object<string, number>}                                        - nouveaux ELO par uid
+ */
+function computeEloUpdates(rankingArr, ratingsMap, K = 32) {
+  const N = rankingArr.length;
+  if (N < 2) {
+    const res = {};
+    rankingArr.forEach(p => res[p.uid] = ratingsMap[p.uid] ?? 1000);
+    return res;
+  }
+
+  const pos = {};
+  rankingArr.forEach((p, i) => { pos[p.uid] = (p.position ?? (i + 1)); });
+
+  const K_eff = K / (N - 1);
+  const delta = {};
+  rankingArr.forEach(p => delta[p.uid] = 0);
+
+  for (let i = 0; i < N; i++) {
+    const ui = rankingArr[i].uid;
+    const Ri = ratingsMap[ui] ?? 1000;
+
+    for (let j = 0; j < N; j++) {
+      if (i === j) continue;
+      const uj = rankingArr[j].uid;
+      const Rj = ratingsMap[uj] ?? 1000;
+
+      let Sij = 0.5;                 // ex-aequo par défaut
+      if (pos[ui] < pos[uj]) Sij = 1;
+      if (pos[ui] > pos[uj]) Sij = 0;
+
+      const Eij = 1 / (1 + Math.pow(10, (Rj - Ri) / 400));
+      delta[ui] += K_eff * (Sij - Eij);
+    }
+  }
+
+  const CLAMP = 9999; // mets 60 si tu veux limiter la variation max par course
+  const out = {};
+  rankingArr.forEach(p => {
+    const base = ratingsMap[p.uid] ?? 1000;
+    const d = Math.max(-CLAMP, Math.min(CLAMP, delta[p.uid]));
+    out[p.uid] = Math.round(base + d);
+  });
+  return out;
+}
+
+/* ---------------- Résultats & ELO (avec nouvelle formule) ---------------- */
 document.getElementById("submitResults")?.addEventListener("click", async () => {
   const raceName = document.getElementById("raceName")?.value.trim();
   const raceDateInput = document.getElementById("raceDate");
@@ -205,64 +195,106 @@ document.getElementById("submitResults")?.addEventListener("click", async () => 
 
   const raceId = Date.now().toString();
 
-  const allData = {};
+  // 1) ELO actuels des participants
+  const ratingsMap = {};
   for (const p of ranking) {
-    const snap = await getDoc(doc(db, "users", p.uid));
-    if (snap.exists()) allData[p.uid] = snap.data();
+    const s = await getDoc(doc(db, "users", p.uid));
+    ratingsMap[p.uid] = s.exists() ? (s.data().eloRating ?? 1000) : 1000;
   }
 
-  const newEloMap = calculateDynamicElo(ranking, allData);
+  // 2) Construire participants + positions
+  const participants = ranking.map((p, i) => ({
+    uid: p.uid,
+    name: p.name,
+    position: i + 1
+  }));
 
-  for (let i = 0; i < ranking.length; i++) {
-    const uid = ranking[i].uid;
-    const position = i + 1;
-    await setDoc(doc(db, "users", uid, "raceHistory", raceId), {
+  // 3) Calcul ELO
+  const newRatings = computeEloUpdates(participants, ratingsMap, 32);
+
+  // 4) Sauver l'historique pilote
+  for (const part of participants) {
+    const ref = doc(db, "users", part.uid, "raceHistory", raceId);
+    await setDoc(ref, {
       name: raceName,
       date: raceDate,
-      position
+      position: part.position
     });
-    const ref = doc(db, "users", uid);
-    const prev = allData[uid] || {};
-    await setDoc(ref, { ...prev, eloRating: newEloMap[uid] });
+  }
+
+  // 5) Sauver la course globale (avec positions)
+  await setDoc(doc(db, "courses", raceId), {
+    id: raceId,
+    name: raceName,
+    date: raceDate,
+    participants // [{uid,name,position}]
+  });
+  courseMap.set(raceId, { id: raceId, name: raceName, date: raceDate, participants });
+
+  // 6) Appliquer les nouveaux ELO
+  for (const part of participants) {
+    await updateDoc(doc(db, "users", part.uid), { eloRating: newRatings[part.uid] });
   }
 
   alert("Résultats enregistrés !");
   ranking = [];
   renderRanking();
-  loadCourses();
+  await loadCourses();
+  await loadIncidentHistory();
 });
 
-function calculateDynamicElo(rankingArr, allData, K = 32) {
-  const result = {};
-  for (let i = 0; i < rankingArr.length; i++) {
-    const player = rankingArr[i];
-    const playerElo = Number(allData[player.uid]?.eloRating ?? 1000);
-    let totalChange = 0;
-    for (let j = 0; j < rankingArr.length; j++) {
-      if (i === j) continue;
-      const opponent = rankingArr[j];
-      const opponentElo = Number(allData[opponent.uid]?.eloRating ?? 1000);
-      const expected = 1 / (1 + Math.pow(10, (opponentElo - playerElo) / 400));
-      const actual = i < j ? 1 : 0; // gagne si mieux classé
-      totalChange += K * (actual - expected);
-    }
-    const averageChange = totalChange / (rankingArr.length - 1);
-    result[player.uid] = Math.round(playerElo + averageChange);
+/* ---------------- Pilotes (lecture / sélection pour incidents/classement) ---------------- */
+async function loadPilots() {
+  const pilotList = document.getElementById("pilotList");
+  const select = document.getElementById("incidentPilotSelect");
+  const snap = await getDocs(collection(db, "users"));
+
+  if (pilotList) pilotList.innerHTML = "";
+  if (select) {
+    select.innerHTML = "";
+    const opt0 = document.createElement("option");
+    opt0.value = "";
+    opt0.textContent = "-- Sélectionner un pilote --";
+    select.appendChild(opt0);
   }
-  return result;
+
+  for (const docu of snap.docs) {
+    const d = docu.data();
+    const name = `${d.firstName || ""} ${d.lastName || ""}`.trim() || "(Sans nom)";
+    if (pilotList) {
+      const li = document.createElement("li");
+      li.textContent = name;
+      li.addEventListener("click", () => {
+        ranking.push({ uid: docu.id, name });
+        renderRanking();
+      });
+      pilotList.appendChild(li);
+    }
+
+    if (select) {
+      const opt = document.createElement("option");
+      opt.value = docu.id;
+      opt.textContent = name;
+      select.appendChild(opt);
+    }
+  }
 }
 
-/* ---------------- Incidents (UI simple − champs numériques) ---------------- */
+/* ---------------- Incidents (points de licence) ---------------- */
 document.getElementById("addIncidentPilot")?.addEventListener("click", async () => {
   const select = document.getElementById("incidentPilotSelect");
   const uid = select?.value;
-  const name = select?.options[select.selectedIndex]?.textContent || "";
   if (!uid) return;
-  if (selectedPilots.find((p) => p.uid === uid)) return;
 
   const snap = await getDoc(doc(db, "users", uid));
-  const data = snap.data() || {};
-  selectedPilots.push({ uid, name, before: data.licensePoints ?? 10, after: data.licensePoints ?? 10 });
+  if (!snap.exists()) return;
+
+  const d = snap.data();
+  const name = `${d.firstName || ""} ${d.lastName || ""}`.trim() || uid;
+  const before = d.licensePoints ?? 10;
+  const after = before - 1;
+
+  selectedPilots.push({ uid, name, before, after });
   updateIncidentList();
 });
 
@@ -299,75 +331,73 @@ function updateIncidentList() {
 
 document.getElementById("submitIncident")?.addEventListener("click", async () => {
   const description = document.getElementById("incidentDescription")?.value.trim();
-  const raceId = document.getElementById("incidentRaceSelect")?.value;
-  if (!description || selectedPilots.length === 0 || !raceId) {
-    alert("Veuillez compléter tous les champs.");
+  const raceId = document.getElementById("incidentRaceSelect")?.value || null;
+
+  if (!description || selectedPilots.length === 0) {
+    alert("Description et au moins un pilote requis.");
     return;
   }
 
-  const admin = auth.currentUser;
-  const date = new Date().toISOString();
+  const payload = {
+    date: new Date(),
+    description,
+    courseId: raceId || null,
+    pilotes: selectedPilots.map(p => ({ uid: p.uid, before: p.before, after: p.after }))
+  };
 
-  // Applique les valeurs "après"
-  for (const pilot of selectedPilots) {
-    await updateDoc(doc(db, "users", pilot.uid), { licensePoints: pilot.after });
+  await addDoc(collection(db, "incidents"), payload);
+
+  for (const p of selectedPilots) {
+    await updateDoc(doc(db, "users", p.uid), { licensePoints: p.after });
   }
 
-  await addDoc(collection(db, "incidents"), {
-    description,
-    date,
-    course: raceId,
-    pilotes: selectedPilots.map((p) => ({ uid: p.uid, before: p.before, after: p.after })),
-    adminUid: admin.uid
-  });
-
-  alert("Incident enregistré.");
   selectedPilots = [];
   updateIncidentList();
-  const desc = document.getElementById("incidentDescription");
-  if (desc) desc.value = "";
-  loadIncidentHistory();
+  document.getElementById("incidentDescription").value = "";
+  alert("Incident enregistré.");
+  await loadIncidentHistory();
 });
 
-/* ---------------- Courses ---------------- */
+/* ---------------- Courses (liste + suppression) ---------------- */
 async function loadCourses() {
-  const usersSnap = await getDocs(collection(db, "users"));
-  courseMap.clear();
+  const courseList = document.getElementById("courseList");
+  const raceSelect = document.getElementById("incidentRaceSelect");
+  if (courseList) courseList.innerHTML = "";
+  if (raceSelect) raceSelect.innerHTML = "";
 
-  for (const user of usersSnap.docs) {
-    const userId = user.id;
-    const userData = user.data();
-    const historySnap = await getDocs(collection(db, "users", userId, "raceHistory"));
-    historySnap.forEach((docu) => {
-      const d = docu.data();
-      if (!courseMap.has(docu.id)) {
-        courseMap.set(docu.id, {
-          id: docu.id,
-          name: d.name,
-          date: d.date,
-          participants: []
-        });
-      }
-      courseMap.get(docu.id).participants.push({
-        name: `${userData.firstName || ""} ${userData.lastName || ""}`.trim(),
-        uid: userId,
-        position: d.position
-      });
-    });
+  const snap = await getDocs(collection(db, "courses"));
+  const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  docs.sort((a, b) => {
+    const da = a.date?.seconds ? new Date(a.date.seconds * 1000) : new Date(a.date || 0);
+    const db = b.date?.seconds ? new Date(b.date.seconds * 1000) : new Date(b.date || 0);
+    return db - da;
+  });
+
+  courseMap = new Map();
+  for (const course of docs) {
+    courseMap.set(course.id, course);
+    if (raceSelect) {
+      const opt = document.createElement("option");
+      opt.value = course.id;
+      const dateTxt = (course.date?.seconds ? new Date(course.date.seconds * 1000) : new Date(course.date || Date.now())).toLocaleDateString("fr-FR");
+      opt.textContent = `${dateTxt} — ${course.name || "Course"}`;
+      raceSelect.appendChild(opt);
+    }
   }
 
-  const courseList = document.getElementById("courseList");
   if (courseList) {
+    if (docs.length === 0) {
+      courseList.innerHTML = "<p>Aucune course.</p>";
+      return;
+    }
     courseList.innerHTML = "";
-    courseMap.forEach((course) => {
+    docs.forEach((course) => {
+      const dateTxt = (course.date?.seconds ? new Date(course.date.seconds * 1000) : new Date(course.date || Date.now())).toLocaleDateString("fr-FR");
       const box = document.createElement("div");
       box.className = "course-box";
-      const dateTxt = course.date?.seconds
-        ? new Date(course.date.seconds * 1000).toLocaleDateString("fr-FR")
-        : (course.date || "");
       box.innerHTML = `
         <h4>${dateTxt} - ${course.name || "Course"}</h4>
-        <ul>${course.participants.map((p) => `<li>${p.name} — ${p.position}ᵉ</li>`).join("")}</ul>
+        <ul>${(course.participants || []).map((p) => `<li>${p.name || p.uid} — ${p.position}ᵉ</li>`).join("")}</ul>
         <button class="delete-course" data-id="${course.id}">🗑️ Supprimer cette course</button>
       `;
       courseList.appendChild(box);
@@ -378,53 +408,77 @@ async function loadCourses() {
         const courseId = btn.dataset.id;
         if (!confirm("Confirmer la suppression de cette course ?")) return;
 
-        const affectedUids = new Set();
+        // 1) Effacer la course globale
+        await deleteDoc(doc(db, "courses", courseId));
+
+        // 2) Nettoyer l'historique de tous les pilotes pour cette course
+        const usersSnap = await getDocs(collection(db, "users"));
         for (const user of usersSnap.docs) {
           const userId = user.id;
           const ref = doc(db, "users", userId, "raceHistory", courseId);
           const snap = await getDoc(ref);
           if (snap.exists()) {
             await deleteDoc(ref);
-            affectedUids.add(userId);
           }
         }
-        for (const uid of affectedUids) {
-          await recalculateElo(uid);
-        }
-        loadCourses();
-      });
-    });
-  }
 
-  const select = document.getElementById("incidentRaceSelect");
-  if (select) {
-    select.innerHTML = "";
-    courseMap.forEach((course) => {
-      const opt = document.createElement("option");
-      const dateTxt = course.date?.seconds
-        ? new Date(course.date.seconds * 1000).toLocaleDateString("fr-FR")
-        : (course.date || "");
-      opt.value = course.id;
-      opt.textContent = `${dateTxt} - ${course.name || "Course"}`;
-      select.appendChild(opt);
+        // 3) Recalcul global cohérent (rejoue toutes les courses restantes)
+        await recalculateAllEloFromCourses();
+
+        // 4) Refresh UI
+        await loadCourses();
+        await loadIncidentHistory();
+        alert("Course supprimée et ELO recalculés.");
+      });
     });
   }
 }
 
-async function recalculateElo(uid) {
-  const ref = collection(db, "users", uid, "raceHistory");
-  const snap = await getDocs(ref);
-  let elo = 1000;
-  const races = [];
-  snap.forEach((docu) => races.push(docu.data()));
-  races.sort((a, b) => (new Date(a.date) - new Date(b.date)));
-  races.forEach((r) => {
-    elo += (10 - (Number(r.position) || 10)) * 5;
-  });
-  const userRef = doc(db, "users", uid);
-  const userSnap = await getDoc(userRef);
-  if (userSnap.exists()) {
-    await setDoc(userRef, { ...userSnap.data(), eloRating: elo });
+/* ---------------- Recalcul GLOBAL des ELO ---------------- */
+/**
+ * Rejoue toutes les courses (collection 'courses') par ordre chronologique
+ * et recalcule les ELO de tous les pilotes à partir de 1000.
+ * Sauvegarde ensuite les ELO finaux dans la collection 'users'.
+ */
+async function recalculateAllEloFromCourses() {
+  // 1) Charger toutes les courses
+  const coursesSnap = await getDocs(collection(db, "courses"));
+  const courses = coursesSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => {
+      const da = a.date?.seconds ? new Date(a.date.seconds * 1000) : new Date(a.date || 0);
+      const db = b.date?.seconds ? new Date(b.date.seconds * 1000) : new Date(b.date || 0);
+      return da - db; // plus anciennes -> plus récentes
+    });
+
+  // 2) Récup tous les users
+  const usersSnap = await getDocs(collection(db, "users"));
+  const elo = new Map();                 // uid -> elo courant
+  usersSnap.forEach(u => elo.set(u.id, (u.data().eloRating ?? 1000)));
+
+  // Réinitialiser à 1000 pour le recalcul
+  usersSnap.forEach(u => elo.set(u.id, 1000));
+
+  // 3) Rejouer chaque course
+  for (const c of courses) {
+    const parts = (c.participants || [])
+      .filter(p => p && p.uid)
+      .map(p => ({ uid: p.uid, position: p.position ?? 9999, name: p.name }));
+
+    if (parts.length < 2) continue;
+
+    // Ratings actuels pour ces participants
+    const ratingsMap = {};
+    parts.forEach(p => { ratingsMap[p.uid] = elo.get(p.uid) ?? 1000; });
+
+    // Calcul
+    const newRatings = computeEloUpdates(parts, ratingsMap, 32);
+    // Application in-memory
+    parts.forEach(p => elo.set(p.uid, newRatings[p.uid]));
+  }
+
+  // 4) Sauvegarder les ELO finaux
+  for (const [uid, r] of elo.entries()) {
+    await updateDoc(doc(db, "users", uid), { eloRating: Math.round(r) });
   }
 }
 
@@ -432,34 +486,23 @@ async function recalculateElo(uid) {
 async function loadIncidentHistory() {
   const container = document.getElementById("incidentHistory");
   if (!container) return;
-  container.innerHTML = "<h4>Historique des incidents :</h4>";
-  const snap = await getDocs(collection(db, "incidents"));
+  container.innerHTML = "<p>Chargement…</p>";
 
+  const snap = await getDocs(collection(db, "incidents"));
+  if (snap.empty) { container.innerHTML = "<p>Aucun incident enregistré.</p>"; return; }
+
+  const usersSnap = await getDocs(collection(db, "users"));
+  const userMap = new Map();
+  usersSnap.forEach(u => userMap.set(u.id, u.data()));
+
+  container.innerHTML = "";
   for (const docu of snap.docs) {
     const d = docu.data();
-
-    // Cherche le nom de la course à partir de l'ID
-    let courseName = d.course;
-    let found = false;
-    const usersSnap = await getDocs(collection(db, "users"));
-    for (const user of usersSnap.docs) {
-      const historySnap = await getDocs(collection(db, "users", user.id, "raceHistory"));
-      for (const raceDoc of historySnap.docs) {
-        if (raceDoc.id === d.course) {
-          courseName = raceDoc.data().name || d.course;
-          found = true;
-          break;
-        }
-      }
-      if (found) break;
-    }
-
-    // Liste des pilotes avec noms
+    const courseName = d.courseId ? (courseMap.get(d.courseId)?.name || d.courseId) : "-";
     const pilotListHtml = await Promise.all(
       (d.pilotes || []).map(async (p) => {
-        const userSnap = await getDoc(doc(db, "users", p.uid));
-        if (userSnap.exists()) {
-          const u = userSnap.data();
+        const u = userMap.get(p.uid);
+        if (u) {
           const fullName = `${u.firstName || ""} ${u.lastName || ""}`.trim();
           return `<li>${fullName} : ${p.before} → ${p.after}</li>`;
         } else {
@@ -491,60 +534,47 @@ window.deleteIncident = async function (id) {
         const userRef = doc(db, "users", p.uid);
         const userSnap = await getDoc(userRef);
         if (userSnap.exists()) {
-          const current = userSnap.data().licensePoints ?? 10;
-          const recalculated = current + (p.before - p.after);
-          await updateDoc(userRef, { licensePoints: recalculated });
+          const u = userSnap.data();
+          const fixed = (u.licensePoints ?? 10) + (p.before - p.after);
+          await updateDoc(userRef, { licensePoints: fixed });
         }
       }
     }
+    await deleteDoc(ref);
+    await loadIncidentHistory();
   }
-  await deleteDoc(ref);
-  loadIncidentHistory();
 };
 
-/* ---------------- Réclamations (depuis dashboard) ---------------- */
-// Affiche toutes les réclamations + permet de changer le statut / noter / supprimer
+/* ---------------- Réclamations (ESTACUP) ---------------- */
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+function renderStatusOption(val, current, label) {
+  return `<option value="${val}" ${current===val?"selected":""}>${label}</option>`;
+}
+
 async function loadReclamations() {
   const box = document.getElementById("reclamationsBox");
   if (!box) return;
-  box.innerHTML = "<p class='loading'>Chargement…</p>";
+  box.innerHTML = "<p>Chargement…</p>";
 
   const snap = await getDocs(collection(db, "reclamations"));
-  if (snap.empty) {
-    box.innerHTML = "<p>Aucune réclamation pour l’instant.</p>";
-    return;
-  }
-
-  // tri anti-chronologique
-  const rows = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-    .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+  if (snap.empty) { box.innerHTML = "<p>Aucune réclamation.</p>"; return; }
 
   box.innerHTML = "";
-  for (const r of rows) {
-    // cherche le nom du plaignant (uid → users)
-    let author = r.uid || "";
-    try {
-      const u = await getDoc(doc(db, "users", r.uid));
-      if (u.exists()) {
-        const ud = u.data();
-        author = `${ud.firstName || ""} ${ud.lastName || ""}`.trim() || r.uid;
-      }
-    } catch {}
+  for (const docu of snap.docs) {
+    const r = { id: docu.id, ...docu.data() };
+    const status = r.status || "pending";
+    const note = r.adminNote || "";
 
     const div = document.createElement("div");
-    div.className = "incident-entry";
-    const when = r.date ? new Date(r.date).toLocaleString() : "-";
-
-    const note = r.adminNote || "";
-    const status = r.status || "pending";
-
+    div.className = "course-box";
     div.innerHTML = `
-      <p><strong>${when}</strong> — <em>${statusLabel(status)}</em></p>
-      <p><strong>Plaignant :</strong> ${author}</p>
-      <p><strong>Course :</strong> ${r.courseText || "-"}</p>
-      <p><strong>Pilote(s) :</strong> ${r.pilotsText || "-"}</p>
-      <p><strong>Moment :</strong> ${r.momentText || "-"}</p>
-      <p style="margin-top:6px">${r.description || ""}</p>
+      <p><strong>${new Date(r.date || Date.now()).toLocaleString()}</strong> — <em>${status}</em></p>
+      <p><strong>Course :</strong> ${escapeHtml(r.courseText || "-")}</p>
+      <p><strong>Pilote(s) :</strong> ${escapeHtml(r.pilotsText || "-")}</p>
+      <p><strong>Moment :</strong> ${escapeHtml(r.momentText || "-")}</p>
+      <p>${escapeHtml(r.description || "")}</p>
 
       <div style="display:grid;grid-template-columns:1fr;gap:8px;margin-top:12px">
         <label>Statut :
@@ -556,7 +586,7 @@ async function loadReclamations() {
           </select>
         </label>
         <label>Note admin :
-          <textarea class="reclam-note" data-id="${r.id}" rows="2" placeholder="Ajouter une note (optionnel)">${escapeHtml(note)}</textarea>
+          <textarea class="reclam-note" data-id="${r.id}" rows="3" placeholder="Ajouter une note (optionnel)">${escapeHtml(note)}</textarea>
         </label>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="reclam-save" data-id="${r.id}">💾 Enregistrer</button>
@@ -567,7 +597,6 @@ async function loadReclamations() {
     box.appendChild(div);
   }
 
-  // handlers
   box.querySelectorAll(".reclam-save").forEach(btn => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.id;
@@ -576,64 +605,49 @@ async function loadReclamations() {
       const payload = {
         status: statusSel?.value || "pending",
         adminNote: noteTa?.value || "",
-        adminUid: auth.currentUser?.uid || null,
-        adminUpdatedAt: new Date().toISOString()
+        updatedAt: new Date()
       };
       await updateDoc(doc(db, "reclamations", id), payload);
       alert("Réclamation mise à jour.");
-      loadReclamations();
+      await loadReclamations();
     });
   });
-
   box.querySelectorAll(".reclam-del").forEach(btn => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.id;
       if (!confirm("Supprimer cette réclamation ?")) return;
       await deleteDoc(doc(db, "reclamations", id));
-      loadReclamations();
+      await loadReclamations();
     });
   });
 }
 
-function statusLabel(key) {
-  switch (key) {
-    case "pending": return "En cours";
-    case "in_review": return "À l’étude";
-    case "accepted": return "Acceptée";
-    case "rejected": return "Rejetée";
-    default: return key;
-  }
-}
-function renderStatusOption(value, current, label) {
-  return `<option value="${value}" ${current===value?"selected":""}>${label}</option>`;
-}
-function escapeHtml(s) {
-  return String(s ?? "")
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#039;");
-}
-
-/* ---------------- Inscriptions ESTACUP ---------------- */
+/* ---------------- ESTACUP (admin) ---------------- */
 async function loadEstacupSignups() {
-  const container = document.getElementById("estacupList");
-  if (!container) return;
-  container.innerHTML = "<p>Chargement...</p>";
+  const list = document.getElementById("estacupList");
+  if (!list) return;
+  list.innerHTML = "<p>Chargement…</p>";
 
   const snap = await getDocs(collection(db, "estacup_signups"));
-  if (snap.empty) {
-    container.innerHTML = "<p>Aucune inscription pour l’instant.</p>";
-    return;
-  }
+  if (snap.empty) { list.innerHTML = "<p>Aucune inscription.</p>"; return; }
 
-  container.innerHTML = "";
-  snap.forEach((docu) => {
+  const takenNumbers = new Set();
+  snap.forEach(d => { const n = d.data().raceNumber; if (n !== undefined && n !== null) takenNumbers.add(Number(n)); });
+
+  const usersSnap = await getDocs(collection(db, "users"));
+  const usersById = new Map();
+  usersSnap.forEach(u => usersById.set(u.id, u.data()));
+
+  list.innerHTML = "";
+  for (const docu of snap.docs) {
     const d = docu.data();
+    const u = usersById.get(d.uid) || {};
+    const fullName = `${u.firstName || ""} ${u.lastName || ""}`.trim() || d.uid;
+
     const div = document.createElement("div");
     div.className = "course-box";
     div.innerHTML = `
+      <h4>${fullName}</h4>
       <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));align-items:center">
         <input class="edit-first" value="${d.firstName || ""}" placeholder="Prénom" />
         <input class="edit-last"  value="${d.lastName || ""}"  placeholder="Nom" />
@@ -661,67 +675,56 @@ async function loadEstacupSignups() {
         <button class="delete-signup" data-id="${docu.id}">🗑️ Supprimer</button>
       </div>
     `;
-    container.appendChild(div);
-  });
+    list.appendChild(div);
+  }
 
-  // Affichage conditionnel couleurs
-  document.querySelectorAll(".edit-livery").forEach((select) => {
-    select.addEventListener("change", () => {
-      const colors = select.parentElement.querySelector(".colors");
-      colors.style.display = select.value === "Livrée semi-perso" ? "block" : "none";
-    });
-  });
-
-  // Validation
-  document.querySelectorAll(".validate-signup").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const id = btn.dataset.id;
-      await updateDoc(doc(db, "estacup_signups", id), { validated: true });
-      alert("Inscription validée !");
-      loadEstacupSignups();
-    });
-  });
-
-  // Sauvegarde
   document.querySelectorAll(".save-signup").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      const box = btn.parentElement.parentElement;
       const id = btn.dataset.id;
-      const rawNum = box.querySelector(".edit-number")?.value ?? "";
-      const parsedNum = rawNum === "" ? null : parseInt(rawNum, 10);
+      const card = btn.closest(".course-box");
 
-      const data = {
-        firstName: box.querySelector(".edit-first").value.trim(),
-        lastName: box.querySelector(".edit-last").value.trim(),
-        age: parseInt(box.querySelector(".edit-age").value, 10) || null,
-        email: box.querySelector(".edit-email").value.trim(),
-        teamName: box.querySelector(".edit-team").value.trim() || " ",
-        carChoice: box.querySelector(".edit-car").value.trim(),
-        liveryChoice: box.querySelector(".edit-livery").value,
-        raceNumber: parsedNum
+      const payload = {
+        firstName: card.querySelector(".edit-first").value.trim(),
+        lastName:  card.querySelector(".edit-last").value.trim(),
+        age:       Number(card.querySelector(".edit-age").value) || null,
+        email:     card.querySelector(".edit-email").value.trim(),
+        teamName:  card.querySelector(".edit-team").value.trim(),
+        carChoice: card.querySelector(".edit-car").value.trim(),
+        raceNumber: Number(card.querySelector(".edit-number").value) || null,
+        liveryChoice: card.querySelector(".edit-livery").value,
+        liveryColors: {
+          color1: card.querySelector(".edit-color1").value,
+          color2: card.querySelector(".edit-color2").value,
+          color3: card.querySelector(".edit-color3").value
+        },
+        updatedAt: new Date()
       };
-      if (data.liveryChoice === "Livrée semi-perso") {
-        data.liveryColors = {
-          color1: box.querySelector(".edit-color1").value,
-          color2: box.querySelector(".edit-color2").value,
-          color3: box.querySelector(".edit-color3").value
-        };
-      } else {
-        data.liveryColors = null;
-      }
-
-      if (data.raceNumber !== null && (data.raceNumber < 1 || data.raceNumber > 999)) {
-        alert("Le numéro de course doit être entre 1 et 999.");
-        return;
-      }
-
-      await updateDoc(doc(db, "estacup_signups", id), data);
+      await updateDoc(doc(db, "estacup_signups", id), payload);
       alert("Inscription mise à jour.");
       loadEstacupSignups();
     });
   });
 
-  // Suppression
+  document.querySelectorAll(".edit-livery").forEach(sel => {
+    sel.addEventListener("change", (e) => {
+      const card = e.target.closest(".course-box");
+      const colors = card.querySelector(".colors");
+      if (e.target.value === "Livrée semi-perso") {
+        colors.style.display = "block";
+      } else {
+        colors.style.display = "none";
+      }
+    });
+  });
+
+  document.querySelectorAll(".validate-signup").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.id;
+      await updateDoc(doc(db, "estacup_signups", id), { validated: true, validatedAt: new Date() });
+      loadEstacupSignups();
+    });
+  });
+
   document.querySelectorAll(".delete-signup").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.id;
@@ -731,4 +734,139 @@ async function loadEstacupSignups() {
       }
     });
   });
+}
+
+/* ---------------- Gestion Pilotes (édition admin) ---------------- */
+function setupPilotsSection() {
+  const search = document.getElementById("pilotSearch");
+  const list = document.getElementById("pilotAdminList");
+  const refresh = document.getElementById("refreshPilots");
+  const form = document.getElementById("pilotForm");
+  const formEmpty = document.getElementById("pilotFormEmpty");
+
+  if (!list) return;
+
+  const f_first = document.getElementById("pf_firstName");
+  const f_last  = document.getElementById("pf_lastName");
+  const f_email = document.getElementById("pf_email");
+  const f_dob   = document.getElementById("pf_dob");
+  const f_lid   = document.getElementById("pf_licenseId");
+  const f_pts   = document.getElementById("pf_licensePoints");
+  const f_cls   = document.getElementById("pf_licenseClass");
+  const f_elo   = document.getElementById("pf_eloRating");
+  const btnSave = document.getElementById("pf_save");
+  const btnReset = document.getElementById("pf_reset");
+
+  let allPilots = [];
+  let current = null;
+
+  async function fetchPilots() {
+    list.innerHTML = "<li>Chargement…</li>";
+    const snap = await getDocs(collection(db, "users"));
+    allPilots = [];
+    list.innerHTML = "";
+    snap.forEach(d => { allPilots.push({ id: d.id, data: d.data() || {} }); });
+    renderPilotList();
+  }
+
+  function match(p, q) {
+    const txt = (q || "").trim().toLowerCase();
+    if (!txt) return true;
+    const d = p.data;
+    const name = `${d.firstName || ""} ${d.lastName || ""}`.toLowerCase();
+    const email = (d.email || "").toLowerCase();
+    return name.includes(txt) || email.includes(txt);
+  }
+
+  function renderPilotList() {
+    list.innerHTML = "";
+    const q = search?.value || "";
+    const items = allPilots
+      .filter(p => match(p, q))
+      .sort((a,b)=> {
+        const an = `${a.data.firstName||""} ${a.data.lastName||""}`.trim().toLowerCase();
+        const bn = `${b.data.firstName||""} ${b.data.lastName||""}`.trim().toLowerCase();
+        return an.localeCompare(bn);
+      });
+
+    if (items.length === 0) { list.innerHTML = "<li>Aucun pilote.</li>"; return; }
+
+    for (const p of items) {
+      const li = document.createElement("li");
+      const d = p.data;
+      const name = `${d.firstName || ""} ${d.lastName || ""}`.trim() || "(Sans nom)";
+      const cls = d.licenseClass || "Rookie";
+      li.innerHTML = `<strong>${name}</strong><br><small>${d.email || ""}</small><br><small>Classe: ${cls} • E-Safety: ${d.licensePoints ?? 10} • E-Rating: ${d.eloRating ?? 1000}</small>`;
+      li.style.cursor = "pointer";
+      li.onclick = () => selectPilot(p);
+      list.appendChild(li);
+    }
+  }
+
+  function toDateInput(val) {
+    try {
+      if (!val) return "";
+      if (val.seconds) {
+        const d = new Date(val.seconds*1000);
+        return d.toISOString().slice(0,10);
+      }
+      const d = new Date(val);
+      if (!isNaN(d)) return d.toISOString().slice(0,10);
+      return String(val);
+    } catch { return ""; }
+  }
+
+  function selectPilot(p) {
+    current = p;
+    formEmpty?.classList.add("hidden");
+    form?.classList.remove("hidden");
+
+    const d = p.data || {};
+    f_first.value = d.firstName || "";
+    f_last.value  = d.lastName || "";
+    f_email.value = d.email || "";
+    f_dob.value   = toDateInput(d.dob || d.birthDate || d.birthday || d.dateNaissance || d.naissance);
+    f_lid.value   = d.licenceId || d.licenseId || "";
+    f_pts.value   = (d.licensePoints ?? 10);
+    f_cls.value   = d.licenseClass || "Rookie";
+    f_elo.value   = d.eloRating ?? 1000;
+  }
+
+  btnSave?.addEventListener("click", async () => {
+    if (!current) return;
+    const ref = doc(db, "users", current.id);
+    const prevSnap = await getDoc(ref);
+    const prev = prevSnap.exists() ? prevSnap.data() : {};
+
+    const payload = {
+      ...prev,
+      firstName: f_first.value.trim() || prev.firstName || "",
+      lastName:  f_last.value.trim()  || prev.lastName  || "",
+      email:     f_email.value.trim() || prev.email     || "",
+      licenceId: f_lid.value.trim()   || prev.licenceId || prev.licenseId || "",
+      licenseId: f_lid.value.trim()   || prev.licenseId || prev.licenceId || "",
+      licensePoints: Number(f_pts.value) || 0,
+      licenseClass: f_cls.value || "Rookie"
+    };
+
+    const dobStr = f_dob.value.trim();
+    if (dobStr) payload.dob = dobStr;
+
+    await setDoc(ref, payload);
+    alert("Pilote mis à jour.");
+    await fetchPilots();
+    const again = allPilots.find(x => x.id === current.id);
+    if (again) selectPilot(again);
+  });
+
+  btnReset?.addEventListener("click", () => {
+  if (!current) return;
+  selectPilot(current); // recharge les valeurs d’origine du pilote
+  alert("Formulaire réinitialisé.");
+});
+
+  refresh?.addEventListener("click", fetchPilots);
+  search?.addEventListener("input", renderPilotList);
+
+  fetchPilots();
 }
