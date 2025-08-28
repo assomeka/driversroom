@@ -115,7 +115,7 @@ $("registerForm").addEventListener("submit", async (e) => {
         dob,
         licenseId: "PILOT-" + Math.random().toString(36).substring(2, 6).toUpperCase(),
         eloRating: 1000,
-        licensePoints: 10,
+        licensePoints: 8,
         raceCount: 0,
         createdAt: new Date(),
         admin: false

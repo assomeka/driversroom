@@ -1,5 +1,6 @@
-// dashboard.js — Driver's Room : navigation + Résultats + ESTACUP + Stats + DOB + LicenseClass
-// + Sous-menu ESTACUP (Inscription / Engagés / Réclamation) + Questionnaire MEKA
+// dashboard.js — Driver's Room : navigation + Résultats + Stats + ESTACUP
+// + M-Rating (valeur + classement + best/worst via replay des courses)
+// + M-Safety (cartes jolies avec titres)
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
@@ -15,9 +16,7 @@ import {
   addDoc
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
-/* =========================
-   Firebase
-========================= */
+/* ======================== Firebase ======================== */
 const firebaseConfig = {
   apiKey: "AIzaSyDJ7uhvc31nyRB4bh9bVtkagaUksXG1fOo",
   authDomain: "estacupbymeka.firebaseapp.com",
@@ -26,14 +25,13 @@ const firebaseConfig = {
   messagingSenderId: "1065406380441",
   appId: "1:1065406380441:web:55005f7d29290040c13b08"
 };
-const app = initializeApp(firebaseConfig);
+const app  = initializeApp(firebaseConfig);
 const auth = getAuth(app);
-const db = getFirestore(app);
+const db   = getFirestore(app);
 
-/* =========================
-   Utils
-========================= */
+/* ======================== Utils ======================== */
 const $ = (id) => document.getElementById(id);
+const isNum = (x) => typeof x === "number" && isFinite(x);
 
 function toDate(value) {
   if (!value) return null;
@@ -42,42 +40,44 @@ function toDate(value) {
   const d = new Date(value);
   return isNaN(d) ? null : d;
 }
-function formatDateFR(value) {
-  const d = toDate(value);
+function formatDateFR(v) {
+  const d = toDate(v);
   return d ? d.toLocaleDateString("fr-FR") : "";
+}
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 }
 function firstDefined(...vals) {
   for (const v of vals) if (v !== undefined && v !== null && v !== "") return v;
   return undefined;
 }
-function escapeHtml(s) {
-  return (s || "").replace(/[&<>"']/g, (c) => {
-    const map = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-    return map[c];
-  });
-}
 
-/* =========================
-   Navigation onglets (haut)
-========================= */
+/* ======================== État ======================== */
+let currentUid   = null;
+let lastUserData = null;
+/** courseId -> array<{uid,name,position}> */
+const raceIndex = new Map();
+
+/* ======================== Navigation ======================== */
 function setupNavigation(isAdmin = false) {
   const goToAdmin = $("goToAdmin");
   if (isAdmin && goToAdmin) goToAdmin.classList.remove("hidden");
   goToAdmin?.addEventListener("click", () => (window.location.href = "admin.html"));
 
-  const buttons = document.querySelectorAll('.menu button[data-section]');
+  const buttons  = document.querySelectorAll('.menu button[data-section]');
   const sections = document.querySelectorAll('.section');
 
   function showSection(key) {
     sections.forEach(s => s.classList.add("hidden"));
-    const el = $(`section-${key}`);
+    const el = document.getElementById(`section-${key}`);
     if (el) el.classList.remove("hidden");
 
-    // Rechargements à l’ouverture
-    if (key === "results" && currentUid) loadResults(currentUid);
-    if (key === "estacup" && lastUserData) {
+    if (key === "results"  && currentUid) loadResults(currentUid);
+    if (key === "erating"  && currentUid) loadMRating(currentUid);
+    if (key === "esafety"  && currentUid) loadMSafety(currentUid);
+    if (key === "estacup"  && lastUserData) {
       setupEstacupSubnav();
-      showEstacupSub("inscription"); // défaut
+      showEstacupSub("inscription");
       setupMekaQuestionnaire(lastUserData);
       loadEstacupEngages();
       loadReclamHistory();
@@ -85,57 +85,14 @@ function setupNavigation(isAdmin = false) {
   }
 
   buttons.forEach(btn => btn.addEventListener("click", () => showSection(btn.getAttribute("data-section"))));
-  showSection("infos"); // défaut
+  showSection("infos");
 }
 
-/* =========================
-   Sous-menu ESTACUP
-========================= */
-function setupEstacupSubnav() {
-  const subnav = $("estacupSubnav");
-  if (!subnav) return;
-
-  const subs = document.querySelectorAll("#estacupSubnav .estc-sub-btn");
-  subs.forEach(btn => {
-    btn.onclick = () => showEstacupSub(btn.dataset.sub);
-  });
-}
-
-function showEstacupSub(key) {
-  const blocks = {
-    inscription: $("estacup-sub-inscription"),
-    engages: $("estacup-sub-engages"),
-    reclam: $("estacup-sub-reclam")
-  };
-  Object.values(blocks).forEach(b => b && b.classList.add("hidden"));
-  if (blocks[key]) blocks[key].classList.remove("hidden");
-}
-
-/* =========================
-   État global
-========================= */
-let currentUid = null;
-let lastUserData = null;
-
-/* =========================
-   Auth + bootstrap
-========================= */
-function styleLogoutButton() {
-  const btn = $("logout");
-  if (!btn) return;
-  btn.style.setProperty("background-color", "#e53935", "important");
-  btn.style.setProperty("color", "#ffffff", "important");
-  btn.style.setProperty("border-color", "#e53935", "important");
-}
-$("logout")?.addEventListener("click", () => {
-  signOut(auth).then(() => (window.location.href = "login.html"));
-});
-styleLogoutButton();
+$("logout")?.addEventListener("click", () => signOut(auth).then(() => (window.location.href = "login.html")));
 
 onAuthStateChanged(auth, async (user) => {
   if (!user) { window.location.href = "login.html"; return; }
 
-  // Récup profil (fallback authMap -> pilotUid si besoin)
   let userSnap = await getDoc(doc(db, "users", user.uid));
   if (!userSnap.exists()) {
     const map = await getDoc(doc(db, "authMap", user.uid));
@@ -144,32 +101,23 @@ onAuthStateChanged(auth, async (user) => {
   if (!userSnap.exists()) { alert("Profil introuvable."); return; }
 
   const data = userSnap.data();
-  currentUid = userSnap.id;
+  currentUid   = userSnap.id;
   lastUserData = data;
 
-  // Header infos
-  $("fullName") && ( $("fullName").textContent = `${data.firstName ?? ""} ${data.lastName ?? ""}`.trim() || "—" );
-  $("licenseId") && ( $("licenseId").textContent = data.licenceId || data.licenseId || "-" );
-  $("eloRating") && ( $("eloRating").textContent = data.eloRating ?? 1000 );
-  $("licensePoints") && ( $("licensePoints").textContent = data.licensePoints ?? 10 );
-
-  // ✅ Classe de licence (défaut Rookie)
-  if ($("licenseClass")) $("licenseClass").textContent = data.licenseClass || "Rookie";
-
-  // Date de naissance
-  const dobValue = firstDefined(data.dob, data.birthDate, data.birthday, data.dateNaissance, data.naissance);
-  $("dob") && ( $("dob").textContent = formatDateFR(dobValue) || "Non renseignée" );
+  $("fullName").textContent      = `${data.firstName ?? ""} ${data.lastName ?? ""}`.trim() || "—";
+  $("licenseId").textContent     = data.licenceId || data.licenseId || "-";
+  $("eloRating").textContent     = data.eloRating ?? 1000;
+  $("licensePoints").textContent = data.licensePoints ?? 10;
+  $("licenseClass").textContent  = data.licenseClass || "Rookie";
+  $("dob").textContent           = formatDateFR(firstDefined(data.dob, data.birthDate, data.birthday, data.dateNaissance, data.naissance)) || "Non renseignée";
 
   setupNavigation(data.admin === true);
 
-  // Pré-chargements utiles
   await loadResults(currentUid);
   await loadPilotStats(currentUid);
 });
 
-/* =========================
-   Résultats (historique courses)
-========================= */
+/* ======================== Résultats + classements ======================== */
 async function loadResults(uid) {
   const ul = $("raceHistory");
   if (!ul) return;
@@ -182,31 +130,65 @@ async function loadResults(uid) {
     const rows = [];
     snap.forEach(d => rows.push({ id: d.id, ...d.data() }));
 
+    // tri du plus récent au plus ancien
     rows.sort((a, b) => {
       const da = toDate(a.date) ?? new Date(a.date || 0);
-      const dbb = toDate(b.date) ?? new Date(b.date || 0);
-      return dbb - da;
+      const db = toDate(b.date) ?? new Date(b.date || 0);
+      return db - da;
     });
 
-    // Nombre de participants par course (pour affichage pos/total)
     const targetIds = new Set(rows.map(r => r.id));
-    const countMap = {};
+    const countMap  = {};
+    raceIndex.clear();
+
+    // Constituer les classements en parcourant tous les utilisateurs
     const usersSnap = await getDocs(collection(db, "users"));
     for (const u of usersSnap.docs) {
+      const udata = u.data();
+      const name  = `${udata.firstName ?? ""} ${udata.lastName ?? ""}`.trim() || "(Sans nom)";
       const rhSnap = await getDocs(collection(db, "users", u.id, "raceHistory"));
       rhSnap.forEach(rh => {
-        const raceId = rh.id;
-        if (targetIds.has(raceId)) countMap[raceId] = (countMap[raceId] || 0) + 1;
+        const r = { id: rh.id, ...rh.data() };
+        if (!targetIds.has(r.id)) return;
+        countMap[r.id] = (countMap[r.id] || 0) + 1;
+
+        const list = raceIndex.get(r.id) || [];
+        const pos  = Number(r.position) || 9999;
+
+        list.push({ uid: u.id, name, position: pos });
+        raceIndex.set(r.id, list);
       });
     }
 
     ul.innerHTML = "";
     for (const r of rows) {
-      const d = formatDateFR(r.date) || r.date || "";
+      const d     = formatDateFR(r.date) || r.date || "";
       const total = countMap[r.id] || 1;
-      const pos = (r.position ?? "?");
+      const pos   = (r.position ?? "?");
+
       const li = document.createElement("li");
-      li.textContent = `${d} – ${r.name || "Course"} : ${pos}/${total}`;
+      li.className = "race-item";
+
+      const btn = document.createElement("button");
+      btn.className = "race-btn";
+      btn.textContent = `${d} – ${r.name || "Course"} : ${pos}/${total}`;
+      btn.setAttribute("data-raceid", r.id);
+
+      const details = document.createElement("div");
+      details.id = `cls-${r.id}`;
+      details.className = "race-classification";
+      details.style.display = "none";
+      details.innerHTML = "<em>Chargement…</em>";
+
+      btn.addEventListener("click", async () => {
+        const shown = details.style.display !== "none";
+        if (shown) { details.style.display = "none"; return; }
+        await renderRaceClassification(r.id, details, r);
+        details.style.display = "block";
+      });
+
+      li.appendChild(btn);
+      li.appendChild(details);
       ul.appendChild(li);
     }
   } catch (e) {
@@ -215,9 +197,29 @@ async function loadResults(uid) {
   }
 }
 
-/* =========================
-   Stats Pilote
-========================= */
+async function renderRaceClassification(raceId, container, raceMeta) {
+  try {
+    const arr = (raceIndex.get(raceId) || []).slice().sort((a, b) => a.position - b.position);
+    if (arr.length === 0) {
+      container.innerHTML = "<em>Pas d’informations de classement disponibles.</em>";
+      return;
+    }
+
+    const title = escapeHtml(raceMeta?.name || "Course");
+    let html = `<strong>Classement — ${title}</strong>`;
+    html += `<table class="race-table"><thead><tr><th>#</th><th>Pilote</th></tr></thead><tbody>`;
+    for (const item of arr) {
+      html += `<tr><td>${item.position}</td><td>${escapeHtml(item.name)}</td></tr>`;
+    }
+    html += `</tbody></table>`;
+    container.innerHTML = html;
+  } catch (e) {
+    console.error(e);
+    container.innerHTML = "<em>Erreur lors du chargement du classement.</em>";
+  }
+}
+
+/* ======================== Stats pilote ======================== */
 async function loadPilotStats(uid) {
   const startsEl = $("statStarts");
   const bestEl   = $("statBest");
@@ -247,12 +249,12 @@ async function loadPilotStats(uid) {
     });
 
     const starts = positions.length;
-    const best = positions.length ? Math.min(...positions) : null;
-    const wins = positions.filter(p => p === 1).length;
-    const top3 = positions.filter(p => p <= 3).length;
-    const top5 = positions.filter(p => p <= 5).length;
-    const top10 = positions.filter(p => p <= 10).length;
-    const avg = positions.length ? (positions.reduce((a,b)=>a+b,0) / positions.length) : null;
+    const best   = positions.length ? Math.min(...positions) : null;
+    const wins   = positions.filter(p => p === 1).length;
+    const top3   = positions.filter(p => p <= 3).length;
+    const top5   = positions.filter(p => p <= 5).length;
+    const top10  = positions.filter(p => p <= 10).length;
+    const avg    = positions.length ? (positions.reduce((a,b)=>a+b,0) / positions.length) : null;
 
     if (startsEl) startsEl.textContent = String(starts);
     if (bestEl)   bestEl.textContent   = best !== null ? `${best}ᵉ` : "—";
@@ -266,9 +268,230 @@ async function loadPilotStats(uid) {
   }
 }
 
-/* =========================
-   ESTACUP — Questionnaire MEKA
-========================= */
+/* ======================== ELO helper (même que côté admin) ======================== */
+function computeEloUpdates(rankingArr, ratingsMap, K = 32) {
+  const N = rankingArr.length;
+  if (N < 2) {
+    const res = {};
+    rankingArr.forEach(p => res[p.uid] = ratingsMap[p.uid] ?? 1000);
+    return res;
+  }
+  const pos = {};
+  rankingArr.forEach((p, i) => { pos[p.uid] = (p.position ?? (i + 1)); });
+
+  const K_eff = K / (N - 1);
+  const delta = {};
+  rankingArr.forEach(p => delta[p.uid] = 0);
+
+  for (let i = 0; i < N; i++) {
+    const ui = rankingArr[i].uid;
+    const Ri = ratingsMap[ui] ?? 1000;
+    for (let j = 0; j < N; j++) {
+      if (i === j) continue;
+      const uj = rankingArr[j].uid;
+      const Rj = ratingsMap[uj] ?? 1000;
+
+      let Sij = 0.5;
+      if (pos[ui] < pos[uj]) Sij = 1;
+      if (pos[ui] > pos[uj]) Sij = 0;
+
+      const Eij = 1 / (1 + Math.pow(10, (Rj - Ri) / 400));
+      delta[ui] += K_eff * (Sij - Eij);
+    }
+  }
+
+  const out = {};
+  rankingArr.forEach(p => {
+    const base = ratingsMap[p.uid] ?? 1000;
+    out[p.uid] = Math.round(base + delta[p.uid]);
+  });
+  return out;
+}
+
+/* ======================== M-Rating (classement + best/worst robustes) ======================== */
+async function loadMRating(uid) {
+  const bestEl   = $("eloBest");
+  const worstEl  = $("eloWorst");
+  const rankLine = $("eloRankLine");
+
+  // 1) Valeur actuelle
+  let current = 1000;
+  try {
+    const snap = await getDoc(doc(db, "users", uid));
+    if (snap.exists()) {
+      const d = snap.data();
+      current = Number(d.eloRating ?? 1000);
+      $("eloRating").textContent = current;
+    }
+  } catch {}
+
+  /* ---- A. Déterminer les pilotes ACTIFS (>= 1 course) à partir des 'courses' ---- */
+  const coursesSnap = await getDocs(collection(db, "courses"));
+  const courses = coursesSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => {
+      const da = a.date?.seconds ? new Date(a.date.seconds * 1000) : new Date(a.date || 0);
+      const db = b.date?.seconds ? new Date(b.date.seconds * 1000) : new Date(b.date || 0);
+      return da - db; // ascendant
+    });
+
+  const activeSet = new Set();
+  courses.forEach(c => (c.participants || []).forEach(p => p?.uid && activeSet.add(p.uid)));
+  const activeUids = Array.from(activeSet);
+
+  /* ---- B. Classement global parmi ces actifs (tri sur eloRating actuel) ---- */
+  try {
+    const usersSnap = await getDocs(collection(db, "users"));
+    const active = [];
+    usersSnap.forEach(u => {
+      const d = u.data() || {};
+      if (!activeSet.has(u.id)) return;      // seulement ceux qui ont au moins 1 course
+      const val = Number(d.eloRating);
+      active.push({ id: u.id, elo: Number.isNaN(val) ? 1000 : val });
+    });
+    active.sort((a,b) => b.elo - a.elo);
+
+    const idx = active.findIndex(x => x.id === uid);
+    const rank = idx >= 0 ? idx + 1 : null;
+    const total = active.length;
+    rankLine.textContent = rank ? `${rank}ᵉ sur ${total} pilotes actifs` : `— sur ${total} pilotes actifs`;
+  } catch (e) {
+    console.error(e);
+    rankLine.textContent = "—";
+  }
+
+  /* ---- C. Record personnel & plus faible valeur via REPLAY des courses ---- */
+  // On rejoue toutes les courses dans l’ordre avec la même formule que l’admin.
+  // On ne garde que la trajectoire du pilote courant.
+  const elo = new Map();              // uid -> elo courant (init 1000)
+  activeUids.forEach(u => elo.set(u, 1000));
+  const myTrace = [];                 // valeurs du pilote après chacune de ses courses
+
+  for (const c of courses) {
+    const parts = (c.participants || [])
+      .filter(p => p && p.uid)
+      .map(p => ({ uid: p.uid, position: Number(p.position ?? 9999), name: p.name || "" }));
+    if (parts.length < 2) continue;
+
+    const ratingsMap = {};
+    parts.forEach(p => { ratingsMap[p.uid] = elo.get(p.uid) ?? 1000; });
+
+    const newRatings = computeEloUpdates(parts, ratingsMap, 32);
+    parts.forEach(p => {
+      const nr = newRatings[p.uid];
+      elo.set(p.uid, Number.isFinite(nr) ? nr : (elo.get(p.uid) ?? 1000));
+    });
+
+    const me = parts.find(p => p.uid === uid);
+    if (me) myTrace.push(elo.get(uid));
+  }
+
+  const best  = myTrace.length ? Math.max(...myTrace) : current;
+  const worst = myTrace.length ? Math.min(...myTrace) : current;
+  if (bestEl)  bestEl.textContent  = String(best);
+  if (worstEl) worstEl.textContent = String(worst);
+}
+
+/* ======================== M-Safety (cartes) ======================== */
+async function loadMSafety(uid) {
+  const box = $("esafetyIncidents");
+  if (!box) return;
+  box.innerHTML = "<p>Chargement…</p>";
+
+  try {
+    // Charger les noms de courses
+    const coursesSnap = await getDocs(collection(db, "courses"));
+    const courseMap = new Map();
+    coursesSnap.forEach(c => {
+      const d = c.data();
+      const dateTxt = formatDateFR(d.date) || "";
+      courseMap.set(c.id, `${d.name || "Course"}${dateTxt ? ` (${dateTxt})` : ""}`);
+    });
+
+    // Récup incidents (compat: sous-collection et collection globale)
+    const gathered = [];
+    try {
+      const sub = await getDocs(collection(db, "users", uid, "incidents"));
+      sub.forEach(d => gathered.push({ id: d.id, ...d.data() }));
+    } catch {}
+    try {
+      const top = await getDocs(collection(db, "incidents"));
+      top.forEach(d => {
+        const x = d.data();
+        const inPilotes = Array.isArray(x.pilotes) && x.pilotes.some(p => p?.uid === uid);
+        if (inPilotes || x.uid === uid || x.pilotUid === uid || x.driverUid === uid || (Array.isArray(x.uids) && x.uids.includes(uid))) {
+          gathered.push({ id: d.id, ...x });
+        }
+      });
+    } catch {}
+
+    if (gathered.length === 0) { box.innerHTML = "<p>Aucun incident enregistré pour l’instant.</p>"; return; }
+
+    const norm = gathered.map(r => {
+      const date = toDate(r.date || r.timestamp || r.createdAt || r.time);
+      const rawCourse = r.course || r.courseText || r.race || r.raceName || r.raceId || r.courseId || "";
+      const course =
+        (r.courseId && courseMap.get(r.courseId)) ||
+        (String(rawCourse) && courseMap.get(String(rawCourse))) ||
+        String(rawCourse || "-");
+      const description = r.description || r.note || r.reason || r.motif || "";
+      let impact = null;
+      if (Array.isArray(r.pilotes)) {
+        const me = r.pilotes.find(p => p?.uid === uid);
+        if (me && isNum(me.before) && isNum(me.after)) impact = me.after - me.before;
+      }
+      if (!isNum(impact)) {
+        let alt = r.safetyDelta ?? r.licenseDelta ?? r.pointsDelta ?? r.delta;
+        if (!isNum(alt) && isNum(r.penaltyPoints)) alt = -Math.abs(r.penaltyPoints);
+        if (isNum(alt)) impact = alt;
+      }
+      return {
+        date: date || null,
+        course,
+        description,
+        decision: r.decision || r.status || r.state || "",
+        impact
+      };
+    }).sort((a,b)=> (b.date?.getTime?.() || 0) - (a.date?.getTime?.() || 0));
+
+    // Rendu avec titres
+    let html = `<h4>Vos incidents</h4>`;
+    for (const it of norm) {
+      const d = it.date ? it.date.toLocaleString("fr-FR") : "—";
+      const impactTxt = isNum(it.impact) ? (it.impact > 0 ? `+${it.impact}` : `${it.impact}`) : "—";
+      const impCls = isNum(it.impact) ? (it.impact < 0 ? "impact-bad" : "impact-good") : "";
+      html += `
+        <div class="course-box">
+          <p><strong> Date et heure de la décision</strong><br>${d}</p>
+          <p><strong> Course</strong><br>${escapeHtml(it.course || "—")}</p>
+          <p><strong> Description de l'incident</strong><br>${escapeHtml(it.description || "—")}</p>
+          <p><strong> Incidence M-Safety</strong><br><span class="${impCls}">${impactTxt}</span></p>
+        </div>
+      `;
+    }
+    box.innerHTML = html;
+  } catch (e) {
+    console.error(e);
+    box.innerHTML = "<p>Erreur lors du chargement des incidents.</p>";
+  }
+}
+
+/* ======================== Sous-menu ESTACUP ======================== */
+function setupEstacupSubnav() {
+  const subnav = $("estacupSubnav");
+  if (!subnav) return;
+  const subs = document.querySelectorAll("#estacupSubnav .estc-sub-btn");
+  subs.forEach(btn => { btn.onclick = () => showEstacupSub(btn.dataset.sub); });
+}
+function showEstacupSub(key) {
+  const blocks = {
+    inscription: $("estacup-sub-inscription"),
+    engages:     $("estacup-sub-engages"),
+    reclam:      $("estacup-sub-reclam")
+  };
+  Object.values(blocks).forEach(b => b && b.classList.add("hidden"));
+  if (blocks[key]) blocks[key].classList.remove("hidden");
+}
+
 function setupMekaQuestionnaire(userData) {
   const select = $("mekaPaid");
   const nextStep = $("mekaNextStep");
@@ -303,11 +526,8 @@ function setupMekaQuestionnaire(userData) {
   };
 }
 
-/* =========================
-   ESTACUP (formulaire / engagés)
-========================= */
 async function loadEstacupForm(userData, editing = false) {
-  const container = $("estacupFormContainer");
+ const container = $("estacupFormContainer");
   if (!container) return;
   container.innerHTML = "";
 
@@ -371,7 +591,7 @@ async function loadEstacupForm(userData, editing = false) {
 
     <select id="livery">
       <option value="">-- Type de livrée --</option>
-      <option value="Livrée perso" ${existing?.liveryChoice==="Livrée perso"?"selected":""}>Livrée perso</option>
+      <option value="Livrée perso" ${existing?.liveryChoice==="Livrée perso"?"selected":""}>Livrée perso (voir modalités dans le règlement)</option>
       <option value="Livrée semi-perso" ${existing?.liveryChoice==="Livrée semi-perso"?"selected":""}>Livrée semi-perso</option>
       <option value="Livrée MEKA" ${existing?.liveryChoice==="Livrée MEKA"?"selected":""}>Livrée MEKA</option>
     </select>
@@ -464,7 +684,7 @@ async function loadEstacupForm(userData, editing = false) {
 }
 
 async function loadEstacupEngages() {
-  const container = $("estacupEngages");
+ const container = $("estacupEngages");
   if (!container) return;
   container.innerHTML = "<p>Chargement...</p>";
 
@@ -499,65 +719,55 @@ async function loadEstacupEngages() {
   });
 }
 
-/* =========================
-   Réclamations (saisie manuelle dans ESTACUP)
-========================= */
+
 $("submitReclam")?.addEventListener("click", async () => {
-  const courseText = $("reclamCourse")?.value.trim() || "";
-  const pilotsText = $("reclamPilotsText")?.value.trim() || "";
-  const momentText = $("reclamMoment")?.value.trim() || "";
-  const desc = $("reclamDesc")?.value.trim() || "";
-
-  if (!courseText || !pilotsText || !momentText || !desc) {
-    alert("Veuillez renseigner tous les champs (course, pilotes, moment, description).");
-    return;
+  const courseText = $("reclamCourse")?.value?.trim();
+  const pilotsText = $("reclamPilotsText")?.value?.trim();
+  const momentText = $("reclamMoment")?.value?.trim();
+  const desc       = $("reclamDesc")?.value?.trim();
+  if (!courseText || !desc) { alert("Merci de renseigner au moins la course et la description."); return; }
+  try {
+    await addDoc(collection(db, "reclamations"), {
+      courseText, pilotsText, momentText, description: desc,
+      uid: currentUid, date: new Date(), status: "pending"
+    });
+    $("reclamCourse").value = "";
+    $("reclamPilotsText").value = "";
+    $("reclamMoment").value = "";
+    $("reclamDesc").value = "";
+    await loadReclamHistory();
+    alert("Réclamation envoyée !");
+  } catch (e) {
+    console.error(e);
+    alert("Erreur lors de l’envoi de la réclamation.");
   }
-
-  await addDoc(collection(db, "reclamations"), {
-    uid: currentUid,
-    courseText,
-    pilotsText,
-    momentText,
-    description: desc,
-    date: new Date().toISOString(),
-    status: "pending"
-  });
-
-  alert("Réclamation envoyée !");
-  $("reclamCourse").value = "";
-  $("reclamPilotsText").value = "";
-  $("reclamMoment").value = "";
-  $("reclamDesc").value = "";
-  loadReclamHistory();
 });
 
-// Historique des réclamations du pilote connecté
 async function loadReclamHistory() {
   const box = $("reclamHistory");
   if (!box) return;
-  box.innerHTML = "<h4>Vos réclamations :</h4>";
-
-  const snap = await getDocs(collection(db, "reclamations"));
-  const mine = snap.docs
-    .map(d => ({ id: d.id, ...d.data() }))
-    .filter(r => r.uid === currentUid)
-    .sort((a, b) => new Date(b.date) - new Date(a.date));
-
-  if (mine.length === 0) {
-    box.innerHTML += "<p>Aucune réclamation pour l’instant.</p>";
-    return;
-  }
-
-  for (const r of mine) {
-    const div = document.createElement("div");
-    div.className = "incident-entry";
-    div.innerHTML = `
-      <p><strong>${new Date(r.date).toLocaleString()}</strong> — <em>${escapeHtml(r.status === "pending" ? "En cours" : r.status)}</em></p>
-      <p><strong>Course :</strong> ${escapeHtml(r.courseText)}</p>
-      <p><strong>Pilote(s) :</strong> ${escapeHtml(r.pilotsText)}</p>
-      <p><strong>Moment :</strong> ${escapeHtml(r.momentText)}</p>
-      <p>${escapeHtml(r.description)}</p>
-    `;
-    box.appendChild(div);
+  try {
+    const snap = await getDocs(collection(db, "reclamations"));
+    const mine = [];
+    snap.forEach(d => {
+      const x = { id: d.id, ...d.data() };
+      if (x.uid === currentUid) mine.push(x);
+    });
+    if (mine.length === 0) { box.innerHTML = "<p class='muted-note'>Aucune réclamation envoyée.</p>"; return; }
+    mine.sort((a,b)=> (toDate(b.date)??0) - (toDate(a.date)??0));
+    let html = "";
+    for (const r of mine) {
+      html += `<div class="course-box">
+        <p><strong>${(toDate(r.date)||new Date()).toLocaleString("fr-FR")}</strong> — <em>${r.status || "pending"}</em></p>
+        <p><strong>Course :</strong> ${escapeHtml(r.courseText || "-")}</p>
+        <p><strong>Pilote(s) :</strong> ${escapeHtml(r.pilotsText || "-")}</p>
+        <p><strong>Moment :</strong> ${escapeHtml(r.momentText || "-")}</p>
+        <p>${escapeHtml(r.description || "")}</p>
+      </div>`;
+    }
+    box.innerHTML = html;
+  } catch (e) {
+    console.error(e);
+    box.innerHTML = "<p>Erreur lors du chargement des réclamations.</p>";
   }
 }

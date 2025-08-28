@@ -1,11 +1,7 @@
-// ✅ admin.js — complet (avec ELO multi-joueurs + recalcul global)
-// - "Driver's Room" (vert) dans la barre du haut
-// - "Déconnexion" en rouge (fond plein)
-// - Onglet "Résultats" affiché par défaut
-// - Incidents: liste simple par pilote avec champs numériques
-// - Réclamations visibles et éditables
-// - Gestion Pilotes (édition admin)
-// - ⚡️ Nouveau: ELO multi-joueurs (pairwise) + Recalcul global après suppression de course
+// ✅ admin.js — complet (avec ELO multi-joueurs + recalcul global + sélection/désélection pilotes)
+// - Bouton “-” à côté des pilotes ajoutés dans la liste (undo rapide)
+// - Anti-doublon : on ne peut pas ajouter deux fois le même pilote
+// - Reste des fonctionnalités inchangées
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
@@ -37,6 +33,12 @@ const db = getFirestore(app);
 let ranking = [];                // [{ uid, name }]
 let selectedPilots = [];         // { uid, name, before, after }
 let courseMap = new Map();       // courseId -> course doc
+
+// 🔸 Nouveau : set des uid sélectionnés pour empêcher les doublons
+const selectedUIDs = new Set();
+
+// Référence rapide vers les <li> pilotes (pour afficher/masquer le bouton "-")
+const pilotLiByUid = new Map();
 
 onAuthStateChanged(auth, async (user) => {
   if (!user) return (window.location.href = "login.html");
@@ -130,6 +132,19 @@ function renderRanking() {
     li.textContent = `${idx + 1}. ${p.name}`;
     ol.appendChild(li);
   });
+
+  // Mettre à jour l’état visuel des pilotes (bouton "-" visible si sélectionné)
+  updatePilotListSelections();
+}
+
+// 🔹 Retire un pilote du classement (et met à jour l’UI)
+function removeFromRanking(uid) {
+  const idx = ranking.findIndex(r => r.uid === uid);
+  if (idx !== -1) {
+    ranking.splice(idx, 1);
+    selectedUIDs.delete(uid);
+    renderRanking();
+  }
 }
 
 /* ---------------- NOUVEAU — Calcul ELO multi-joueurs ---------------- */
@@ -238,6 +253,7 @@ document.getElementById("submitResults")?.addEventListener("click", async () => 
 
   alert("Résultats enregistrés !");
   ranking = [];
+  selectedUIDs.clear();          // 🔸 Reset la sélection visuelle
   renderRanking();
   await loadCourses();
   await loadIncidentHistory();
@@ -258,26 +274,67 @@ async function loadPilots() {
     select.appendChild(opt0);
   }
 
+  pilotLiByUid.clear();
+
   for (const docu of snap.docs) {
     const d = docu.data();
+    const uid = docu.id;
     const name = `${d.firstName || ""} ${d.lastName || ""}`.trim() || "(Sans nom)";
+
+    // --- Liste Résultats (gauche)
     if (pilotList) {
       const li = document.createElement("li");
-      li.textContent = name;
-      li.addEventListener("click", () => {
-        ranking.push({ uid: docu.id, name });
-        renderRanking();
+      li.dataset.uid = uid;
+
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = name;
+
+      const minusBtn = document.createElement("button");
+      minusBtn.textContent = "–";
+      minusBtn.title = "Retirer du classement";
+      minusBtn.style.marginLeft = "8px";
+      minusBtn.style.display = "none"; // visible uniquement si sélectionné
+      minusBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        removeFromRanking(uid);
       });
+
+      li.appendChild(nameSpan);
+      li.appendChild(minusBtn);
+
+      // Clic pour AJOUTER (si non sélectionné)
+      li.addEventListener("click", () => {
+        if (selectedUIDs.has(uid)) return; // 🔒 empêche le double ajout
+        ranking.push({ uid, name });
+        selectedUIDs.add(uid);
+        renderRanking(); // mettra à jour l’affichage du "-"
+      });
+
       pilotList.appendChild(li);
+      pilotLiByUid.set(uid, { li, minusBtn });
     }
 
+    // --- Select incidents
     if (select) {
       const opt = document.createElement("option");
-      opt.value = docu.id;
+      opt.value = uid;
       opt.textContent = name;
       select.appendChild(opt);
     }
   }
+
+  // Met à jour l’état initial (si on revient sur la page)
+  updatePilotListSelections();
+}
+
+// 🔹 Affiche le bouton “-” et applique un style si le pilote est sélectionné
+function updatePilotListSelections() {
+  pilotLiByUid.forEach(({ li, minusBtn }, uid) => {
+    const isSelected = selectedUIDs.has(uid);
+    li.style.opacity = isSelected ? "0.8" : "1";
+    li.style.fontWeight = isSelected ? "600" : "400";
+    if (minusBtn) minusBtn.style.display = isSelected ? "inline-block" : "none";
+  });
 }
 
 /* ---------------- Incidents (points de licence) ---------------- */
@@ -435,13 +492,7 @@ async function loadCourses() {
 }
 
 /* ---------------- Recalcul GLOBAL des ELO ---------------- */
-/**
- * Rejoue toutes les courses (collection 'courses') par ordre chronologique
- * et recalcule les ELO de tous les pilotes à partir de 1000.
- * Sauvegarde ensuite les ELO finaux dans la collection 'users'.
- */
 async function recalculateAllEloFromCourses() {
-  // 1) Charger toutes les courses
   const coursesSnap = await getDocs(collection(db, "courses"));
   const courses = coursesSnap.docs.map(d => ({ id: d.id, ...d.data() }))
     .sort((a, b) => {
@@ -450,15 +501,13 @@ async function recalculateAllEloFromCourses() {
       return da - db; // plus anciennes -> plus récentes
     });
 
-  // 2) Récup tous les users
   const usersSnap = await getDocs(collection(db, "users"));
-  const elo = new Map();                 // uid -> elo courant
+  const elo = new Map();
   usersSnap.forEach(u => elo.set(u.id, (u.data().eloRating ?? 1000)));
 
   // Réinitialiser à 1000 pour le recalcul
   usersSnap.forEach(u => elo.set(u.id, 1000));
 
-  // 3) Rejouer chaque course
   for (const c of courses) {
     const parts = (c.participants || [])
       .filter(p => p && p.uid)
@@ -466,17 +515,13 @@ async function recalculateAllEloFromCourses() {
 
     if (parts.length < 2) continue;
 
-    // Ratings actuels pour ces participants
     const ratingsMap = {};
     parts.forEach(p => { ratingsMap[p.uid] = elo.get(p.uid) ?? 1000; });
 
-    // Calcul
     const newRatings = computeEloUpdates(parts, ratingsMap, 32);
-    // Application in-memory
     parts.forEach(p => elo.set(p.uid, newRatings[p.uid]));
   }
 
-  // 4) Sauvegarder les ELO finaux
   for (const [uid, r] of elo.entries()) {
     await updateDoc(doc(db, "users", uid), { eloRating: Math.round(r) });
   }
@@ -860,10 +905,10 @@ function setupPilotsSection() {
   });
 
   btnReset?.addEventListener("click", () => {
-  if (!current) return;
-  selectPilot(current); // recharge les valeurs d’origine du pilote
-  alert("Formulaire réinitialisé.");
-});
+    if (!current) return;
+    selectPilot(current); // recharge les valeurs d’origine du pilote
+    alert("Formulaire réinitialisé.");
+  });
 
   refresh?.addEventListener("click", fetchPilots);
   search?.addEventListener("input", renderPilotList);

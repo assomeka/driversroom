@@ -6,6 +6,24 @@
   <title>Driver's Room - ESTACUP</title>
   <link rel="stylesheet" href="style.css" />
   <script type="module" src="dashboard.js" defer></script>
+  <style>
+    /* Petits styles inline pour l’affichage déroulant des classements */
+    .race-item { margin-bottom:10px; }
+    .race-btn {
+      background:#0b1220; border:1px solid #1e293b; color:#e2e8f0;
+      padding:8px 10px; border-radius:8px; width:100%; text-align:left; cursor:pointer;
+    }
+    .race-btn:hover { border-color:#38bdf8; }
+    .race-classification {
+      margin:8px 0 0 0; padding:10px; border:1px dashed #334155; border-radius:8px; background:#0a1020;
+    }
+    .race-table { width:100%; border-collapse:collapse; }
+    .race-table th, .race-table td { padding:6px 8px; border-bottom:1px solid #1e293b; }
+    .muted-note { color:#94a3b8; font-size:.9rem; }
+    .tag { display:inline-block; padding:2px 6px; border-radius:6px; border:1px solid #334155; font-size:.85rem; color:#cbd5e1; }
+    .impact-bad { color:#f87171; font-weight:600; }
+    .impact-good { color:#34d399; font-weight:600; }
+  </style>
 </head>
 <body>
   <header class="site-header">
@@ -19,8 +37,8 @@
     <nav class="menu">
       <button data-section="infos">Infos</button>
       <button data-section="results">Résultats</button>
-      <button data-section="erating">E-Rating</button>
-      <button data-section="esafety">E-Safety</button>
+      <button data-section="erating">M-Rating</button>
+      <button data-section="esafety">M-Safety</button>
       <button data-section="estacup">ESTACUP</button>
       <button id="goToAdmin" class="hidden">Espace admin</button>
       <button id="logout" class="logout">Déconnexion</button>
@@ -49,20 +67,27 @@
     <!-- Section Résultats -->
     <section id="section-results" class="section hidden">
       <h3>Résultats</h3>
-      <ul id="raceHistory"><li>Chargement...</li></ul>
+      <p class="muted-note">Clique sur une course pour afficher le <strong>classement complet</strong>.</p>
+      <ul id="raceHistory"><li>Chargement.</li></ul>
     </section>
 
-    <!-- Section E-Rating -->
-    <section id="section-erating" class="section hidden">
-      <h3>E-Rating</h3>
-      <p><strong>Classement ELO :</strong> <span id="eloRating"></span></p>
-    </section>
+    <!-- Section M-Rating -->
+<section id="section-erating" class="section hidden">
+  <h3>M-Rating</h3>
+  <p><strong>M-Rating actuel :</strong> <span id="eloRating"></span></p>
 
-    <!-- Section E-Safety -->
+  <div id="eratingSummary" class="course-box" style="margin-top:12px">
+    <p><strong> Classement M-Rating global </strong><br><span id="eloRankLine">—</span></p>
+    <p style="margin-top:10px"><strong> Record personnel </strong><br><span id="eloBest">—</span></p>
+    <p style="margin-top:10px"><strong> Plus faible valeur </strong><br><span id="eloWorst">—</span></p>
+  </div>
+</section>
+
+
+    <!-- Section M-Safety -->
     <section id="section-esafety" class="section hidden">
-      <h3>E-Safety</h3>
-      <p><strong>Points de licence (E-Safety) :</strong> <span id="licensePoints"></span></p>
-      <!-- Historique / décisions possibles à afficher ici plus tard -->
+      <h3>M-Safety</h3>
+      <p><strong>Points de licence (M-Safety) :</strong> <span id="licensePoints"></span></p>
       <div id="esafetyIncidents"></div>
     </section>
 
@@ -70,18 +95,15 @@
     <section id="section-estacup" class="section hidden">
       <h3>ESTACUP</h3>
 
-      <!-- ✅ Sous-menu ESTACUP -->
       <nav class="menu" id="estacupSubnav" style="margin-top:-10px;margin-bottom:20px;">
         <button data-sub="inscription" class="estc-sub-btn">Inscription</button>
         <button data-sub="engages" class="estc-sub-btn">Liste des engagés</button>
         <button data-sub="reclam" class="estc-sub-btn">Réclamation</button>
       </nav>
 
-      <!-- Sous-partie Inscription -->
       <div id="estacup-sub-inscription" class="estacup-subsection">
         <h4>Inscription ESTACUP</h4>
 
-        <!-- ✅ Étape questionnaire -->
         <div id="mekaQuestionnaire">
           <p style="margin-bottom:10px;">
             ℹ️ L’inscription est <strong>gratuite</strong> pour les membres MEKA.<br>
@@ -98,17 +120,14 @@
           <div id="mekaNextStep" style="margin-top:15px;"></div>
         </div>
 
-        <!-- ✅ Formulaire caché par défaut (dévoilé si "Oui") -->
         <div id="estacupFormContainer" class="hidden"></div>
       </div>
 
-      <!-- Sous-partie Liste des engagés -->
       <div id="estacup-sub-engages" class="estacup-subsection hidden">
         <h4>Liste des engagés</h4>
         <div id="estacupEngages"></div>
       </div>
 
-      <!-- Sous-partie Réclamation (saisie manuelle) -->
       <div id="estacup-sub-reclam" class="estacup-subsection hidden">
         <h4>Réclamation</h4>
 
@@ -127,7 +146,7 @@
         <button id="submitReclam">📨 Envoyer la réclamation</button>
 
         <p class="livery-intro" style="margin-top:12px;">
-          ℹ️ <strong>Note :</strong> la décision des commissaires sera visible prochainement dans la partie <strong>E-Safety</strong>.
+          ℹ️ <strong>Note :</strong> la décision des commissaires sera visible dans <strong>M-Safety</strong>.
         </p>
 
         <div id="reclamHistory" style="margin-top:20px;"></div>
