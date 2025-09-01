@@ -698,6 +698,7 @@ async function loadEstacupSignups() {
         <input class="edit-last"  value="${d.lastName || ""}"  placeholder="Nom" />
         <input class="edit-age"   type="number" value="${d.age || ""}"    placeholder="Âge" />
         <input class="edit-email" value="${d.email || ""}"  placeholder="Email" />
+        <input class="edit-steam" value="${d.steamId || ""}" placeholder="SteamID64 (765… 17 chiffres)" />
         <input class="edit-team"  value="${d.teamName || ""}" placeholder="Équipe" />
         <input class="edit-car"   value="${d.carChoice || ""}" placeholder="Voiture" />
         <input class="edit-number" type="number" min="1" max="999" value="${d.raceNumber ?? ""}" placeholder="N° de course (1-999)" />
@@ -728,14 +729,25 @@ async function loadEstacupSignups() {
       const id = btn.dataset.id;
       const card = btn.closest(".course-box");
 
+      // Lecture des champs
+      const raceNumber = Number(card.querySelector(".edit-number").value) || null;
+      const steamId = (card.querySelector(".edit-steam").value || "").trim();
+
+      // Validation rapide
+      if (steamId && !/^765\d{14}$/.test(steamId)) {
+        alert("⚠️ SteamID64 invalide. Il doit faire 17 chiffres et commencer par 765.");
+        return;
+      }
+
       const payload = {
         firstName: card.querySelector(".edit-first").value.trim(),
         lastName:  card.querySelector(".edit-last").value.trim(),
         age:       Number(card.querySelector(".edit-age").value) || null,
         email:     card.querySelector(".edit-email").value.trim(),
+        steamId:   steamId, // 👈 nouveau champ
         teamName:  card.querySelector(".edit-team").value.trim(),
         carChoice: card.querySelector(".edit-car").value.trim(),
-        raceNumber: Number(card.querySelector(".edit-number").value) || null,
+        raceNumber: raceNumber,
         liveryChoice: card.querySelector(".edit-livery").value,
         liveryColors: {
           color1: card.querySelector(".edit-color1").value,
@@ -744,6 +756,12 @@ async function loadEstacupSignups() {
         },
         updatedAt: new Date()
       };
+
+      // Si la livrée n'est pas "semi-perso", on peut annuler les couleurs (optionnel)
+      if (payload.liveryChoice !== "Livrée semi-perso") {
+        payload.liveryColors = null;
+      }
+
       await updateDoc(doc(db, "estacup_signups", id), payload);
       alert("Inscription mise à jour.");
       loadEstacupSignups();
@@ -780,6 +798,7 @@ async function loadEstacupSignups() {
     });
   });
 }
+
 
 /* ---------------- Gestion Pilotes (édition admin) ---------------- */
 function setupPilotsSection() {

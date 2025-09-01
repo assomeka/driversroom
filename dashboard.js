@@ -527,7 +527,7 @@ function setupMekaQuestionnaire(userData) {
 }
 
 async function loadEstacupForm(userData, editing = false) {
- const container = $("estacupFormContainer");
+  const container = $("estacupFormContainer");
   if (!container) return;
   container.innerHTML = "";
 
@@ -578,6 +578,17 @@ async function loadEstacupForm(userData, editing = false) {
     <input type="text" id="last" value="${escapeHtml(existing?.lastName || userData.lastName || "")}" placeholder="Nom" required>
     <input type="number" id="age" value="${age ?? ""}" placeholder="Âge" required>
     <input type="email" id="email" value="${escapeHtml(existing?.email || userData.email || '')}" placeholder="Email" required>
+
+    <input type="text" id="steamId"
+           inputmode="numeric"
+           pattern="^765[0-9]{14}$"
+           value="${escapeHtml(existing?.steamId || '')}"
+           placeholder="SteamID64 (17 chiffres, commence par 765…)"
+           required>
+    <small style="color:#94a3b8;margin-top:-6px;display:block;">
+      Exemple : 7656119XXXXXXXXXX — (SteamID64). Tu peux le retrouver sur steamid.io
+    </small>
+
     <input type="text" id="team" value="${escapeHtml(existing?.teamName || '')}" placeholder="Équipe (ou espace)">
     <input type="number" id="raceNumber" min="1" max="999" value="${existing?.raceNumber ?? ''}" placeholder="Numéro de course (1-999)" required>
     <div id="takenNumbers" class="taken-numbers"></div>
@@ -647,6 +658,12 @@ async function loadEstacupForm(userData, editing = false) {
       return;
     }
 
+    const steamId = form.querySelector("#steamId").value.trim();
+    if (!/^765\d{14}$/.test(steamId)) {
+      alert("⚠️ SteamID64 invalide. Il doit faire 17 chiffres et commencer par 765.");
+      return;
+    }
+
     const payload = {
       uid: auth.currentUser.uid,
       firstName: form.querySelector("#first").value.trim(),
@@ -657,8 +674,10 @@ async function loadEstacupForm(userData, editing = false) {
       carChoice: form.querySelector("#car").value,
       liveryChoice: liverySelect.value,
       raceNumber,
+      steamId, // 👈 nouveau champ
       validated: false
     };
+
     if (payload.liveryChoice === "Livrée semi-perso") {
       const DEFAULT_COLORS = { color1: "#000000", color2: "#01234A", color3: "#6BDAEC" };
       payload.liveryColors = {
@@ -682,6 +701,7 @@ async function loadEstacupForm(userData, editing = false) {
     loadEstacupForm(userData, false);
   });
 }
+
 
 async function loadEstacupEngages() {
  const container = $("estacupEngages");
