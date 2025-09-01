@@ -673,67 +673,101 @@ async function loadEstacupSignups() {
   if (!list) return;
   list.innerHTML = "<p>Chargement…</p>";
 
+  // Récupère toutes les inscriptions
   const snap = await getDocs(collection(db, "estacup_signups"));
-  if (snap.empty) { list.innerHTML = "<p>Aucune inscription.</p>"; return; }
+  if (snap.empty) {
+    list.innerHTML = "<p>Aucune inscription.</p>";
+    return;
+  }
 
-  const takenNumbers = new Set();
-  snap.forEach(d => { const n = d.data().raceNumber; if (n !== undefined && n !== null) takenNumbers.add(Number(n)); });
-
+  // Map user infos (facultatif : pour afficher le nom complet si présent)
   const usersSnap = await getDocs(collection(db, "users"));
   const usersById = new Map();
   usersSnap.forEach(u => usersById.set(u.id, u.data()));
 
-  list.innerHTML = "";
-  for (const docu of snap.docs) {
+  // Regroupe en attente / validées
+  const pending = [];
+  const validated = [];
+  snap.forEach(docu => {
     const d = docu.data();
+    (d.validated ? validated : pending).push({ id: docu.id, d });
+  });
+
+  // Tri (optionnel) : par numéro de course puis nom
+  const byRaceThenName = (a, b) => {
+    const na = Number(a.d.raceNumber ?? 9999);
+    const nb = Number(b.d.raceNumber ?? 9999);
+    if (na !== nb) return na - nb;
+    const la = `${a.d.lastName || ""}`.toLowerCase();
+    const lb = `${b.d.lastName || ""}`.toLowerCase();
+    return la.localeCompare(lb);
+  };
+  pending.sort(byRaceThenName);
+  validated.sort(byRaceThenName);
+
+  // Gabarit carte
+  const cardHtml = (id, d) => {
     const u = usersById.get(d.uid) || {};
     const fullName = `${u.firstName || ""} ${u.lastName || ""}`.trim() || d.uid;
+    return `
+      <div class="course-box" data-id="${id}">
+        <h4>${fullName}</h4>
+        <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));align-items:center">
+          <input class="edit-first" value="${d.firstName || ""}" placeholder="Prénom" />
+          <input class="edit-last"  value="${d.lastName || ""}"  placeholder="Nom" />
+          <input class="edit-age"   type="number" value="${d.age || ""}"    placeholder="Âge" />
+          <input class="edit-email" value="${d.email || ""}"  placeholder="Email" />
+          <input class="edit-steam" value="${d.steamId || ""}" placeholder="SteamID64 (765… 17 chiffres)" />
+          <input class="edit-team"  value="${d.teamName || ""}" placeholder="Équipe" />
+          <input class="edit-car"   value="${d.carChoice || ""}" placeholder="Voiture" />
+          <input class="edit-number" type="number" min="1" max="999" value="${d.raceNumber ?? ""}" placeholder="N° de course (1-999)" />
+          <select class="edit-livery">
+            <option value="Livrée perso" ${d.liveryChoice === "Livrée perso" ? "selected" : ""}>Livrée perso</option>
+            <option value="Livrée semi-perso" ${d.liveryChoice === "Livrée semi-perso" ? "selected" : ""}>Livrée semi-perso</option>
+            <option value="Livrée MEKA" ${d.liveryChoice === "Livrée MEKA" ? "selected" : ""}>Livrée MEKA</option>
+          </select>
+          <div class="colors" ${d.liveryChoice !== "Livrée semi-perso" ? "style='display:none'" : ""}>
+            <input type="color" class="edit-color1" value="${d.liveryColors?.color1 || "#000000"}" />
+            <input type="color" class="edit-color2" value="${d.liveryColors?.color2 || "#01234A"}" />
+            <input type="color" class="edit-color3" value="${d.liveryColors?.color3 || "#6BDAEC"}" />
+          </div>
+        </div>
 
-    const div = document.createElement("div");
-    div.className = "course-box";
-    div.innerHTML = `
-      <h4>${fullName}</h4>
-      <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));align-items:center">
-        <input class="edit-first" value="${d.firstName || ""}" placeholder="Prénom" />
-        <input class="edit-last"  value="${d.lastName || ""}"  placeholder="Nom" />
-        <input class="edit-age"   type="number" value="${d.age || ""}"    placeholder="Âge" />
-        <input class="edit-email" value="${d.email || ""}"  placeholder="Email" />
-        <input class="edit-steam" value="${d.steamId || ""}" placeholder="SteamID64 (765… 17 chiffres)" />
-        <input class="edit-team"  value="${d.teamName || ""}" placeholder="Équipe" />
-        <input class="edit-car"   value="${d.carChoice || ""}" placeholder="Voiture" />
-        <input class="edit-number" type="number" min="1" max="999" value="${d.raceNumber ?? ""}" placeholder="N° de course (1-999)" />
-        <select class="edit-livery">
-          <option value="Livrée perso" ${d.liveryChoice === "Livrée perso" ? "selected" : ""}>Livrée perso</option>
-          <option value="Livrée semi-perso" ${d.liveryChoice === "Livrée semi-perso" ? "selected" : ""}>Livrée semi-perso</option>
-          <option value="Livrée MEKA" ${d.liveryChoice === "Livrée MEKA" ? "selected" : ""}>Livrée MEKA</option>
-        </select>
-        <div class="colors" ${d.liveryChoice !== "Livrée semi-perso" ? "style='display:none'" : ""}>
-          <input type="color" class="edit-color1" value="${d.liveryColors?.color1 || "#000000"}" />
-          <input type="color" class="edit-color2" value="${d.liveryColors?.color2 || "#01234A"}" />
-          <input type="color" class="edit-color3" value="${d.liveryColors?.color3 || "#6BDAEC"}" />
+        <p style="margin-top:10px">Statut : ${d.validated ? "✅ Validé" : "⏳ En attente"}</p>
+        <div class="actions" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+          ${d.validated ? "" : `<button class="validate-signup" data-id="${id}">✅ Valider</button>`}
+          <button class="save-signup" data-id="${id}">💾 Enregistrer</button>
+          <button class="delete-signup" data-id="${id}">🗑️ Supprimer</button>
         </div>
       </div>
-
-      <p style="margin-top:10px">Statut : ${d.validated ? "✅ Validé" : "⏳ En attente"}</p>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-        <button class="validate-signup" data-id="${docu.id}" ${d.validated ? "disabled" : ""}>✅ Valider</button>
-        <button class="save-signup" data-id="${docu.id}">💾 Enregistrer</button>
-        <button class="delete-signup" data-id="${docu.id}">🗑️ Supprimer</button>
-      </div>
     `;
-    list.appendChild(div);
-  }
+  };
 
-  document.querySelectorAll(".save-signup").forEach((btn) => {
+  // Render deux sections
+  list.innerHTML = `
+    <section style="margin-bottom:20px">
+      <h3>⏳ En attente (${pending.length})</h3>
+      <div id="estacupListPending" style="display:flex;flex-direction:column;gap:12px"></div>
+    </section>
+    <section>
+      <h3>✅ Validées (${validated.length})</h3>
+      <div id="estacupListValidated" style="display:flex;flex-direction:column;gap:12px"></div>
+    </section>
+  `;
+
+  const pendingRoot = document.getElementById("estacupListPending");
+  const validatedRoot = document.getElementById("estacupListValidated");
+
+  pending.forEach(({ id, d }) => pendingRoot.insertAdjacentHTML("beforeend", cardHtml(id, d)));
+  validated.forEach(({ id, d }) => validatedRoot.insertAdjacentHTML("beforeend", cardHtml(id, d)));
+
+  // Listeners (sur le conteneur parent pour couvrir les deux sections)
+  list.querySelectorAll(".save-signup").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.id;
       const card = btn.closest(".course-box");
 
-      // Lecture des champs
-      const raceNumber = Number(card.querySelector(".edit-number").value) || null;
       const steamId = (card.querySelector(".edit-steam").value || "").trim();
-
-      // Validation rapide
       if (steamId && !/^765\d{14}$/.test(steamId)) {
         alert("⚠️ SteamID64 invalide. Il doit faire 17 chiffres et commencer par 765.");
         return;
@@ -744,22 +778,22 @@ async function loadEstacupSignups() {
         lastName:  card.querySelector(".edit-last").value.trim(),
         age:       Number(card.querySelector(".edit-age").value) || null,
         email:     card.querySelector(".edit-email").value.trim(),
-        steamId:   steamId, // 👈 nouveau champ
+        steamId:   steamId,
         teamName:  card.querySelector(".edit-team").value.trim(),
         carChoice: card.querySelector(".edit-car").value.trim(),
-        raceNumber: raceNumber,
+        raceNumber: Number(card.querySelector(".edit-number").value) || null,
         liveryChoice: card.querySelector(".edit-livery").value,
-        liveryColors: {
-          color1: card.querySelector(".edit-color1").value,
-          color2: card.querySelector(".edit-color2").value,
-          color3: card.querySelector(".edit-color3").value
-        },
+        liveryColors: null, // par défaut
         updatedAt: new Date()
       };
 
-      // Si la livrée n'est pas "semi-perso", on peut annuler les couleurs (optionnel)
-      if (payload.liveryChoice !== "Livrée semi-perso") {
-        payload.liveryColors = null;
+      // Couleurs si semi-perso
+      if (payload.liveryChoice === "Livrée semi-perso") {
+        payload.liveryColors = {
+          color1: card.querySelector(".edit-color1").value,
+          color2: card.querySelector(".edit-color2").value,
+          color3: card.querySelector(".edit-color3").value
+        };
       }
 
       await updateDoc(doc(db, "estacup_signups", id), payload);
@@ -768,7 +802,7 @@ async function loadEstacupSignups() {
     });
   });
 
-  document.querySelectorAll(".edit-livery").forEach(sel => {
+  list.querySelectorAll(".edit-livery").forEach(sel => {
     sel.addEventListener("change", (e) => {
       const card = e.target.closest(".course-box");
       const colors = card.querySelector(".colors");
@@ -780,7 +814,7 @@ async function loadEstacupSignups() {
     });
   });
 
-  document.querySelectorAll(".validate-signup").forEach((btn) => {
+  list.querySelectorAll(".validate-signup").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.id;
       await updateDoc(doc(db, "estacup_signups", id), { validated: true, validatedAt: new Date() });
@@ -788,7 +822,7 @@ async function loadEstacupSignups() {
     });
   });
 
-  document.querySelectorAll(".delete-signup").forEach((btn) => {
+  list.querySelectorAll(".delete-signup").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.id;
       if (confirm("Supprimer cette inscription ?")) {
@@ -798,6 +832,7 @@ async function loadEstacupSignups() {
     });
   });
 }
+
 
 
 /* ---------------- Gestion Pilotes (édition admin) ---------------- */
