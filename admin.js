@@ -1,6 +1,7 @@
 // ✅ admin.js — complet (avec ELO multi-joueurs + recalcul global + sélection/désélection pilotes)
 // - Bouton “-” à côté des pilotes ajoutés dans la liste (undo rapide)
 // - Anti-doublon : on ne peut pas ajouter deux fois le même pilote
+// - Ajouts : tri des engagés (arrivée, nom, n°) + nom du déposant dans les réclamations
 // - Reste des fonctionnalités inchangées
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
@@ -39,6 +40,15 @@ const selectedUIDs = new Set();
 
 // Référence rapide vers les <li> pilotes (pour afficher/masquer le bouton "-")
 const pilotLiByUid = new Map();
+
+/* --- Helper ajouté pour le tri "arrivée" --- */
+function toDateVal(v) {
+  if (!v) return null;
+  if (v?.seconds && typeof v.seconds === "number") return new Date(v.seconds * 1000);
+  if (typeof v?.toDate === "function") { try { return v.toDate(); } catch { /* ignore */ } }
+  const d = new Date(v);
+  return isNaN(d) ? null : d;
+}
 
 onAuthStateChanged(auth, async (user) => {
   if (!user) return (window.location.href = "login.html");
@@ -606,16 +616,25 @@ async function loadReclamations() {
   const snap = await getDocs(collection(db, "reclamations"));
   if (snap.empty) { box.innerHTML = "<p>Aucune réclamation.</p>"; return; }
 
+  // 🔹 Nouveau : récupérer les users pour afficher le nom du déposant
+  const usersSnap = await getDocs(collection(db, "users"));
+  const usersById = new Map();
+  usersSnap.forEach(u => usersById.set(u.id, u.data() || {}));
+
   box.innerHTML = "";
   for (const docu of snap.docs) {
     const r = { id: docu.id, ...docu.data() };
     const status = r.status || "pending";
     const note = r.adminNote || "";
 
+    const deposant = usersById.get(r.uid) || {};
+    const deposantName = `${deposant.firstName || ""} ${deposant.lastName || ""}`.trim() || (r.uid || "—");
+
     const div = document.createElement("div");
     div.className = "course-box";
     div.innerHTML = `
       <p><strong>${new Date(r.date || Date.now()).toLocaleString()}</strong> — <em>${status}</em></p>
+      <p><strong>Déposée par :</strong> ${escapeHtml(deposantName)}</p>
       <p><strong>Course :</strong> ${escapeHtml(r.courseText || "-")}</p>
       <p><strong>Pilote(s) :</strong> ${escapeHtml(r.pilotsText || "-")}</p>
       <p><strong>Moment :</strong> ${escapeHtml(r.momentText || "-")}</p>
@@ -693,17 +712,37 @@ async function loadEstacupSignups() {
     (d.validated ? validated : pending).push({ id: docu.id, d });
   });
 
-  // Tri (optionnel) : par numéro de course puis nom
-  const byRaceThenName = (a, b) => {
-    const na = Number(a.d.raceNumber ?? 9999);
-    const nb = Number(b.d.raceNumber ?? 9999);
-    if (na !== nb) return na - nb;
+  // 🔹 Nouveau — tri paramétrable (arrival | name | number)
+  const sortSel = document.getElementById("estacupSort");
+  const mode = sortSel?.value || "arrival";
+
+  const timeKey = (d) =>
+    (toDateVal(d.validatedAt) || toDateVal(d.updatedAt) || toDateVal(d.createdAt) || new Date(0)).getTime();
+
+  const byArrival = (a, b) => timeKey(b.d) - timeKey(a.d); // récents en haut
+  const byName = (a, b) => {
     const la = `${a.d.lastName || ""}`.toLowerCase();
     const lb = `${b.d.lastName || ""}`.toLowerCase();
-    return la.localeCompare(lb);
+    if (la !== lb) return la.localeCompare(lb);
+    const fa = `${a.d.firstName || ""}`.toLowerCase();
+    const fb = `${b.d.firstName || ""}`.toLowerCase();
+    return fa.localeCompare(fb);
   };
-  pending.sort(byRaceThenName);
-  validated.sort(byRaceThenName);
+  const byNumber = (a, b) => (Number(a.d.raceNumber ?? 9999) - Number(b.d.raceNumber ?? 9999));
+
+  const applySort = (arr) => {
+    switch (mode) {
+      case "name":   arr.sort(byName);   break;
+      case "number": arr.sort(byNumber); break;
+      default:       arr.sort(byArrival);
+    }
+  };
+
+  applySort(pending);
+  applySort(validated);
+
+  // (ré)applique le tri si l’UI change
+  sortSel?.addEventListener("change", () => loadEstacupSignups());
 
   // Gabarit carte
   const cardHtml = (id, d) => {
@@ -833,8 +872,6 @@ async function loadEstacupSignups() {
   });
 }
 
-
-
 /* ---------------- Gestion Pilotes (édition admin) ---------------- */
 function setupPilotsSection() {
   const search = document.getElementById("pilotSearch");
@@ -946,6 +983,7 @@ function setupPilotsSection() {
       licenseId: f_lid.value.trim()   || prev.licenseId || prev.licenceId || "",
       licensePoints: Number(f_pts.value) || 0,
       licenseClass: f_cls.value || "Rookie"
+      // eloRating laissé tel quel côté admin (non modifié ici)
     };
 
     const dobStr = f_dob.value.trim();
