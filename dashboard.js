@@ -3,6 +3,8 @@
 // Ajout : colonne "Podiums" (seulement Split 1) dans le classement pilotes ESTACUP ; les victoires/podiums du Split 2 ne comptent pas.
 // MAJ 2025-10-06 : lecture directe de penaltyMs ; classement équipes : enlève "manches comptées", ajoute Victoires/Podiums (Split 1 uniquement)
 // MAJ 2025-10-06-d : 🧹 Supprime totalement les graphes (fonctions + appels + markup)
+// MAJ 2025-10-06-fixEstacupOnly : les classements ESTACUP ne comptent que les courses avec estacup === true
+// MAJ 2025-10-06-prioManualPoints : le dashboard affiche en priorité participants[].points (saisie admin)
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
@@ -284,10 +286,20 @@ function pickUid(p) {
 
 /* === Résolveurs unifiés (participant -> points/équipe), avec fallback raceHistory + signup === */
 async function resolvePoints(uid, courseId, participant) {
+  // 1) ✅ PRIORITÉ ABSOLUE : valeur directement stockée sur le participant (saisie admin)
+  if (participant && typeof participant.points === "number" && isFinite(participant.points)) {
+    return participant.points;
+  }
+
+  // 2) Sinon : autres chemins locaux possibles sur participant
   const local = pickPointsLocal(participant);
   if (local !== null) return local;
+
+  // 3) Sinon : raceHistory
   const rh = await getRaceHistoryEntry(uid, courseId);
   if (rh.points !== null) return rh.points;
+
+  // 4) Par défaut : 0 (aucun barème implicite côté dashboard)
   return 0;
 }
 async function resolveTeam(uid, courseId, participant) {
@@ -443,7 +455,7 @@ async function renderRaceClassification(raceId, container, raceMeta) {
         <td>${bestMs != null ? msToClock(bestMs) : "—"}</td>
         <td>${escapeHtml(gapText)}</td>
         <td>${penMs  != null ? msToClock(penMs) : "—"}</td>
-        <td>${Number.isFinite(points) ? points : "—"}</td>
+        <td>${Number.isFinite(points) ? points : 0}</td>
       </tr>`;
     }
     html += `</tbody></table></div>`;
@@ -1016,12 +1028,8 @@ async function loadReclamHistory() {
 
 /* ======================== Classements ESTACUP ======================== */
 function isEstacupCourse(c) {
-  const tag = (s)=> (s||"").toString().toLowerCase();
-  const name = tag(c.name);
-  const series = tag(c.series || c.category || "");
-  const flag = (c.estacup === true) || name.includes("estacup") || series.includes("estacup") ||
-               (Array.isArray(c.tags) && c.tags.some(t => tag(t).includes("estacup")));
-  return !!flag;
+  // ✅ stricte : seulement si le flag Firestore est présent et vrai
+  return c && c.estacup === true;
 }
 function normTeamName(t) {
   const s = (t||"").toString().trim();

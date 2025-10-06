@@ -1,4 +1,5 @@
 // admin.js — Import JSON, pénalités (groupes), drag & drop inter-groupes
+// v2025-10-06 — FIX: Split visible en mode JSON même si ESTACUP = Non
 // v2025-10-04 — points auto vs manuel, refresh points après DnD, sections Pilotes & ESTACUP intégrées du n°1
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
@@ -141,10 +142,11 @@ function setupResultsUI() {
   isEstacupSel.value = "yes";
   roundWrap.style.display = "block";
   raceNameWrap.style.display = "none";
+
+  // ⬇️ FIX : le nombre de splits reste visible en mode JSON, même si ESTACUP = Non
   isEstacupSel.addEventListener("change", () => {
     const yes = isEstacupSel.value === "yes";
-    $("modeJson").checked ? (splitCountWrap.style.display = yes ? "block" : "none")
-      : (splitCountWrap.style.display = "none");
+    splitCountWrap.style.display = $("modeJson").checked ? "block" : "none";
     roundWrap.style.display = yes ? "block" : "none";
     raceNameWrap.style.display = yes ? "none" : "block";
   });
@@ -157,8 +159,8 @@ function setupResultsUI() {
       const mode = document.querySelector('input[name="inputMode"]:checked').value;
       manualBox.style.display = (mode === "manual") ? "block" : "none";
       jsonBox.style.display = (mode === "json") ? "block" : "none";
-      const yes = isEstacupSel.value === "yes";
-      $("splitCountWrap").style.display = (mode === "json" && yes) ? "block" : "none";
+      // ⬇️ FIX : affichage indépendamment d'ESTACUP
+      $("splitCountWrap").style.display = (mode === "json") ? "block" : "none";
     })
   );
 
@@ -418,7 +420,6 @@ function extractLaps(it) {
 }
 
 /* ================== CLASSEMENT + PÉNALITÉS + OVERRIDE (DnD) ================== */
-// (identique au n°2)
 function recomputePositions(rows) { /* ... code identique au n°2 ... */ 
   // ——— pour la lisibilité ici, ce bloc est inchangé et nécessaire —
   if (!rows || rows.length === 0) return;
@@ -933,8 +934,9 @@ async function saveImportedResults() {
       const team = user?.teamName || r.team || "";
       const car = carBrandFromName(normalizeCarName(user?.carChoice || r.car || ""));
 
+      // ⚠️ Points : 0 par défaut si NON ESTACUP ; barème auto si ESTACUP ; override si saisi manuellement
       const defaultPts = getDefaultPoints(isSprint, splitNum, r.position);
-      const points = Number.isFinite(r._pointsManual) ? r._pointsManual : defaultPts;
+      const points = Number.isFinite(r._pointsManual) ? r._pointsManual : (ImportState.isEstacup ? defaultPts : 0);
 
       const obj = {
         uid, name: fullName, position: r.position,
