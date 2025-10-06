@@ -29,19 +29,121 @@
       <!-- Section Résultats -->
       <section id="section-results" class="admin-section hidden">
         <h3>Résultats de course</h3>
-        <input type="text" id="raceName" placeholder="Nom de la course" required />
-        <input type="date" id="raceDate" required />
-        <div class="pilot-section">
-          <div>
-            <h4>Pilotes enregistrés</h4>
-            <ul id="pilotList" class="pilot-list"></ul>
-          </div>
-          <div>
-            <h4>Classement (ordre de clic)</h4>
-            <ol id="rankingList" class="ranking-list"></ol>
+
+        <!-- ===== ENTÊTE : Étape 1 – Contexte course ===== -->
+        <div class="course-box" id="contextBox">
+          <h4>Étape 1 — Contexte</h4>
+
+          <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));align-items:end">
+            <div>
+              <label for="isEstacup">Manche ESTACUP ?</label>
+              <select id="isEstacup">
+                <option value="yes">Oui</option>
+                <option value="no">Non</option>
+              </select>
+            </div>
+
+            <!-- Visible si ESTACUP = Oui -->
+            <div id="roundWrap">
+              <label for="estcRoundText">Round</label>
+              <input type="text" id="estcRoundText" placeholder="Prologue, 1, 2, 3…" />
+            </div>
+
+            <!-- Visible si ESTACUP = Non -->
+            <div id="raceNameWrap" style="display:none">
+              <label for="raceName">Nom de la course</label>
+              <input type="text" id="raceName" placeholder="Ex: Endu Monza du Jeudi" />
+            </div>
+
+            <div>
+              <label for="raceCircuit">Circuit</label>
+              <input type="text" id="raceCircuit" placeholder="Ex: Monza" />
+            </div>
+
+            <div>
+              <label for="raceDate">Date</label>
+              <input type="date" id="raceDate" />
+            </div>
+
+            <!-- Splits : visible seulement quand on choisit JSON et ESTACUP = Oui -->
+            <div id="splitCountWrap" style="display:none">
+              <label for="splitCount">Nombre de splits</label>
+              <select id="splitCount">
+                <option value="1">1</option>
+                <option value="2">2</option>
+              </select>
+            </div>
           </div>
         </div>
-        <button id="submitResults">Valider le classement</button>
+
+        <!-- ===== Étape 2 – Mode de saisie ===== -->
+        <div class="course-box" id="modeBox">
+          <h4>Étape 2 — Mode de saisie</h4>
+          <div style="display:flex;gap:12px;flex-wrap:wrap">
+            <label><input type="radio" name="inputMode" value="manual" id="modeManual" checked /> Saisie manuelle</label>
+            <label><input type="radio" name="inputMode" value="json" id="modeJson" /> Import depuis fichiers JSON</label>
+          </div>
+        </div>
+
+        <!-- ===== Mode JSON ===== -->
+        <div class="course-box" id="jsonImportBox" style="display:none">
+          <h4>Import automatique (JSON Assetto Corsa)</h4>
+
+          <div id="filesWrap" style="margin-top:12px">
+            <h5 style="margin:6px 0">Fichiers JSON (résultats serveur)</h5>
+
+            <!-- Split 1 -->
+            <div class="course-box" style="padding:12px">
+              <h4 style="margin:0 0 8px">Split 1</h4>
+              <label> Sprint S1 (JSON) </label>
+              <input type="file" id="fileSprintS1" accept=".json,application/json" />
+              <label> Finale / Principale S1 (JSON) </label>
+              <input type="file" id="fileMainS1" accept=".json,application/json" />
+            </div>
+
+            <!-- Split 2 (affiché seulement si splitCount=2) -->
+            <div id="split2Wrap" class="course-box" style="padding:12px;display:none">
+              <h4 style="margin:0 0 8px">Split 2</h4>
+              <label> Sprint S2 (JSON) </label>
+              <input type="file" id="fileSprintS2" accept=".json,application/json" />
+              <label> Finale / Principale S2 (JSON) </label>
+              <input type="file" id="fileMainS2" accept=".json,application/json" />
+            </div>
+
+            <button id="analyzeJson">Analyser les fichiers</button>
+          </div>
+
+          <!-- Matching pilotes non trouvés -->
+          <div id="matchBlock" class="course-box" style="display:none">
+            <h4>Correspondance des pilotes non trouvés</h4>
+            <p class="muted">Associe chaque nom importé à un pilote existant quand aucun lien automatique n’a été trouvé.</p>
+            <div id="matchList"></div>
+            <button id="applyMatching">Appliquer les correspondances</button>
+          </div>
+
+          <!-- Aperçu résultats -->
+          <div id="previewBlock" class="course-box" style="display:none">
+            <h4>Aperçu des résultats (finales)</h4>
+            <div id="resultsPreview"></div>
+            <button id="submitJsonResults">✅ Enregistrer ces résultats</button>
+          </div>
+        </div>
+
+        <!-- ===== Mode MANUEL ===== -->
+        <div class="course-box" id="manualBox">
+          <h4>Mode manuel (classement par clic sur les pilotes)</h4>
+          <div class="pilot-section">
+            <div>
+              <h4>Pilotes enregistrés</h4>
+              <ul id="pilotList" class="pilot-list"></ul>
+            </div>
+            <div>
+              <h4>Classement (ordre de clic)</h4>
+              <ol id="rankingList" class="ranking-list"></ol>
+            </div>
+          </div>
+          <button id="submitResults">Valider le classement</button>
+        </div>
       </section>
 
       <!-- Section Pilotes -->
@@ -110,15 +212,11 @@
       <section id="section-incidents" class="admin-section hidden">
         <h3>Incidents / Réclamations</h3>
 
-        <!-- Sous-bloc : Réclamations reçues (depuis dashboard ESTACUP) -->
         <div class="course-box" style="margin-bottom:24px">
           <h4>Réclamations reçues</h4>
-          <div id="reclamationsBox">
-            <!-- rempli par JS -->
-          </div>
+          <div id="reclamationsBox"></div>
         </div>
 
-        <!-- Sous-bloc : Saisie d'incident (points de licence) -->
         <div class="course-box">
           <h4>Créer / Enregistrer un incident</h4>
 
@@ -132,7 +230,6 @@
             </div>
           </div>
 
-          <!-- Liste simple des pilotes -->
           <ul id="incidentList" class="incident-list"></ul>
 
           <label for="incidentRaceSelect" style="margin-top:16px;display:block">Course concernée :</label>
@@ -145,7 +242,6 @@
           </div>
         </div>
 
-        <!-- Historique -->
         <div id="incidentHistory" style="margin-top:24px"></div>
       </section>
 
@@ -159,13 +255,13 @@
       <section id="section-estacup" class="admin-section hidden">
         <h3>Inscriptions ESTACUP</h3>
         <div class="toolbar" style="margin:8px 0 14px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-    <label for="estacupSort" style="white-space:nowrap;">Tri :</label>
-    <select id="estacupSort">
-      <option value="arrival">Ordre d'arrivée (récent en haut)</option>
-      <option value="name">Nom</option>
-      <option value="number">N°</option>
-    </select>
-  </div>
+          <label for="estacupSort" style="white-space:nowrap;">Tri :</label>
+          <select id="estacupSort">
+            <option value="arrival">Ordre d'arrivée (récent en haut)</option>
+            <option value="name">Nom</option>
+            <option value="number">N°</option>
+          </select>
+        </div>
         <div id="estacupList"></div>
       </section>
 

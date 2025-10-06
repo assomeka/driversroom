@@ -1,6 +1,8 @@
 // dashboard.js — Driver's Room : navigation + Résultats + Stats + ESTACUP
-// + M-Rating (valeur + classement + best/worst via replay des courses)
-// + M-Safety (cartes jolies avec titres)
+// Corrigé : lit bien les points saisis par l'admin + équipes depuis participants, raceHistory ou estacup_signups
+// Ajout : colonne "Podiums" (seulement Split 1) dans le classement pilotes ESTACUP ; les victoires/podiums du Split 2 ne comptent pas.
+// MAJ 2025-10-06 : lecture directe de penaltyMs ; classement équipes : enlève "manches comptées", ajoute Victoires/Podiums (Split 1 uniquement)
+// MAJ 2025-10-06-d : 🧹 Supprime totalement les graphes (fonctions + appels + markup)
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
@@ -32,7 +34,7 @@ const db   = getFirestore(app);
 /* ======================== Utils ======================== */
 const $ = (id) => document.getElementById(id);
 const isNum = (x) => typeof x === "number" && isFinite(x);
-
+const clamp = (x,min,max)=>Math.max(min,Math.min(max,x));
 function toDate(value) {
   if (!value) return null;
   if (value?.seconds && typeof value.seconds === "number") return new Date(value.seconds * 1000);
@@ -45,18 +47,83 @@ function formatDateFR(v) {
   return d ? d.toLocaleDateString("fr-FR") : "";
 }
 function escapeHtml(s) {
-  return (s || "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+  return (s || "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;"," >":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+function msToClock(ms) {
+  if (!isNum(ms)) return String(ms ?? "");
+  const sign = ms < 0 ? "-" : "";
+  const a = Math.abs(ms);
+  const h = Math.floor(a / 3600000);
+  const m = Math.floor((a % 3600000) / 60000);
+  const s = Math.floor((a % 60000) / 1000);
+  const ms3 = String(Math.floor(a % 1000)).padStart(3, "0");
+  if (h > 0) return `${sign}${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}.${ms3}`;
+  return `${sign}${m}:${String(s).padStart(2,"0")}.${ms3}`;
 }
 function firstDefined(...vals) {
   for (const v of vals) if (v !== undefined && v !== null && v !== "") return v;
   return undefined;
 }
 
-/* ======================== État ======================== */
+/* ======================== État global / caches ======================== */
 let currentUid   = null;
 let lastUserData = null;
-/** courseId -> array<{uid,name,position}> */
-const raceIndex = new Map();
+
+/** Cache inscriptions : uid -> {teamName, raceNumber, carChoice} */
+const signupCache = new Map();
+/** Cache raceHistory : `${uid}::${raceId}` -> {points, team} */
+const raceHistoryCache = new Map();
+
+/* === Préchargement inscription ESTACUP (utile pour les équipes manquantes) === */
+async function ensureSignupCache() {
+  if (signupCache.size > 0) return;
+  try {
+    const snap = await getDocs(collection(db, "estacup_signups"));
+    snap.forEach(d => {
+      const x = d.data() || {};
+      if (!x.uid) return;
+      signupCache.set(x.uid, {
+        teamName: (x.teamName || "").toString(),
+        raceNumber: x.raceNumber,
+        carChoice: x.carChoice
+      });
+    });
+  } catch (e) {
+    console.warn("Signup cache error:", e);
+  }
+}
+
+/* === Accès raceHistory ciblé (pour récupérer points/équipe saisis côté pilote) === */
+async function getRaceHistoryEntry(uid, raceId) {
+  const key = `${uid}::${raceId}`;
+  if (raceHistoryCache.has(key)) return raceHistoryCache.get(key);
+  try {
+    const rs = await getDoc(doc(db, "users", uid, "raceHistory", raceId));
+    if (rs.exists()) {
+      const r = rs.data() || {};
+      const out = {
+        points: toFiniteNumber(firstDefined(
+          r.points, r.score, r.pts, r.estacupPoints, r.estacup?.points,
+          r.classification?.points, r.result?.points
+        )),
+        team: (firstDefined(
+          r.team, r.teamName, r.equipe, r.estacupTeam, r.estacup?.team
+        ) || "").toString()
+      };
+      raceHistoryCache.set(key, out);
+      return out;
+    }
+  } catch (e) {
+    console.warn("raceHistory read error:", uid, raceId, e);
+  }
+  const out = { points: null, team: "" };
+  raceHistoryCache.set(key, out);
+  return out;
+}
+function toFiniteNumber(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
 
 /* ======================== Navigation ======================== */
 function setupNavigation(isAdmin = false) {
@@ -113,11 +180,148 @@ onAuthStateChanged(auth, async (user) => {
 
   setupNavigation(data.admin === true);
 
+  await ensureSignupCache();
   await loadResults(currentUid);
   await loadPilotStats(currentUid);
 });
 
-/* ======================== Résultats + classements ======================== */
+/* ======================== Lecture champs (robuste) ======================== */
+function pick(obj, paths) {
+  for (const p of paths) {
+    const val = getByPath(obj, p);
+    if (val !== undefined && val !== null && val !== "") return val;
+  }
+  return undefined;
+}
+function getByPath(obj, path) {
+  if (!obj || !path) return undefined;
+  const parts = path.split(".");
+  let cur = obj;
+  for (const k of parts) {
+    if (cur && Object.prototype.hasOwnProperty.call(cur, k)) {
+      cur = cur[k];
+    } else {
+      return undefined;
+    }
+  }
+  return cur;
+}
+function anyNumberMs(...vals) {
+  for (const v of vals) {
+    const n = Number(v);
+    if (isFinite(n)) return n > 5000 ? n : n * 1000;
+  }
+  return null;
+}
+function splitNameParts(p) {
+  const first = (pick(p, ["firstName","prenom","givenName","driver.firstName","pilot.firstName"]) ?? "").toString().trim();
+  const last  = (pick(p, ["lastName","nom","familyName","driver.lastName","pilot.lastName"])   ?? "").toString().trim();
+  if (first || last) return { first, last };
+  const full = (pick(p, ["name","driver.name","pilot.name"]) ?? "").toString().trim();
+  if (!full) return { first: "", last: "" };
+  const parts = full.split(/\s+/);
+  if (parts.length === 1) return { first: "", last: parts[0] };
+  return { first: parts.slice(0, -1).join(" "), last: parts.slice(-1)[0] };
+}
+function pickCar(p) {
+  return String(pick(p, ["car","carModel","voiture","vehicle","model","carChoice","car.label","car.name"]) ?? "");
+}
+function pickBestLapMs(p) {
+  const direct = pick(p, [
+    "bestLapMs","bestLap","bestLapTime","lapBest","best","best_time",
+    "stats.bestLapMs","stats.bestLap","laps.best","laps.bestMs"
+  ]);
+  return anyNumberMs(direct);
+}
+function pickTotalTimeMs(p) {
+  const direct = pick(p, [
+    "adjTotalMs","totalMs","total_time_ms",
+    "totalTime","raceTime","timeTotal","finishTime",
+    "stats.adjTotalMs","stats.totalMs","stats.totalTime"
+  ]);
+  return anyNumberMs(direct);
+}
+function pickGapLeaderMsDirect(p) {
+  const direct = pick(p, ["gapToLeader","gap_leader","gapLeader","gap","stats.gapLeader"]);
+  return anyNumberMs(direct);
+}
+
+/* === PÉNALITÉS : ajout lecture directe penaltyMs (flat) === */
+function pickPenaltyMs(p) {
+  let total = 0;
+  total += anyNumberMs(pick(p, ["basePenaltyMs","penalties.baseMs","stats.basePenaltyMs"])) || 0;
+  total += anyNumberMs(pick(p, ["editPenaltyMs","penalties.editMs","stats.editPenaltyMs"])) || 0;
+  total += anyNumberMs(pick(p, ["penaltyMs","penalty_ms","penaltyMS","stats.penaltyMs"])) || 0;
+  total += anyNumberMs(pick(p, ["penaltyTime","penaltiesTime","addedTime","added_time","timePenalty"])) || 0;
+  const pens = pick(p, ["penalties","stats.penalties"]);
+  if (Array.isArray(pens)) for (const pen of pens) total += anyNumberMs(pen?.time, pen?.duration, pen?.addedTime, pen?.ms) || 0;
+  return total || null;
+}
+
+/* === Chemins étendus pour POINTS posés par l'admin === */
+function pickPointsLocal(p) {
+  const v = firstDefined(
+    pick(p, ["points","score","pts","stats.points"]),
+    pick(p, ["result.points","classification.points","estacup.points"]),
+    pick(p, ["adminPoints","pointsAdmin","manualPoints","overrides.points"]),
+    pick(p, ["estacupPoints","estacup_points"])
+  );
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+/* === Chemins étendus pour ÉQUIPE posée par l'admin === */
+function pickTeamLocal(p) {
+  const t = firstDefined(
+    pick(p, ["team","teamName","equipe","stats.team","driver.team","pilot.team"]),
+    pick(p, ["estacup.team","estacupTeam","classification.team","result.team"])
+  );
+  return (t ?? "").toString();
+}
+
+function pickUid(p) {
+  return (p.uid || p.id || p.steamId || p.driverId || p.pilotId || p.accountId || p.name || "").toString();
+}
+
+/* === Résolveurs unifiés (participant -> points/équipe), avec fallback raceHistory + signup === */
+async function resolvePoints(uid, courseId, participant) {
+  const local = pickPointsLocal(participant);
+  if (local !== null) return local;
+  const rh = await getRaceHistoryEntry(uid, courseId);
+  if (rh.points !== null) return rh.points;
+  return 0;
+}
+async function resolveTeam(uid, courseId, participant) {
+  const local = (pickTeamLocal(participant) || "").trim();
+  if (local) return local;
+  const rh = await getRaceHistoryEntry(uid, courseId);
+  if ((rh.team || "").trim()) return rh.team.trim();
+  const sign = signupCache.get(uid);
+  if (sign && (sign.teamName || "").trim()) return sign.teamName.trim();
+  return "(Sans équipe)";
+}
+
+/* -------- Gap leader intelligible (temps ou tours) -------- */
+function computeGapLeaderText(p, leader) {
+  const direct = pickGapLeaderMsDirect(p);
+  if (direct != null) return direct === 0 ? "Leader" : "+" + msToClock(direct);
+
+  const leaderLaps = Number(pick(leader, ["laps","lapCount","stats.laps"]));
+  const myLaps     = Number(pick(p,      ["laps","lapCount","stats.laps"]));
+  if (Number.isFinite(leaderLaps) && Number.isFinite(myLaps) && myLaps < leaderLaps) {
+    const diff = leaderLaps - myLaps;
+    return `+${diff} tour${diff > 1 ? "s" : ""}`;
+  }
+
+  const leadMs = pickTotalTimeMs(leader);
+  const meMs   = pickTotalTimeMs(p);
+  if (leadMs != null && meMs != null) {
+    const raw = meMs - leadMs;
+    return raw <= 0 ? "Leader" : "+" + msToClock(raw);
+  }
+  return "—";
+}
+
+/* ======================== Résultats ======================== */
 async function loadResults(uid) {
   const ul = $("raceHistory");
   if (!ul) return;
@@ -129,49 +333,23 @@ async function loadResults(uid) {
 
     const rows = [];
     snap.forEach(d => rows.push({ id: d.id, ...d.data() }));
-
-    // tri du plus récent au plus ancien
     rows.sort((a, b) => {
       const da = toDate(a.date) ?? new Date(a.date || 0);
       const db = toDate(b.date) ?? new Date(b.date || 0);
       return db - da;
     });
 
-    const targetIds = new Set(rows.map(r => r.id));
-    const countMap  = {};
-    raceIndex.clear();
-
-    // Constituer les classements en parcourant tous les utilisateurs
-    const usersSnap = await getDocs(collection(db, "users"));
-    for (const u of usersSnap.docs) {
-      const udata = u.data();
-      const name  = `${udata.firstName ?? ""} ${udata.lastName ?? ""}`.trim() || "(Sans nom)";
-      const rhSnap = await getDocs(collection(db, "users", u.id, "raceHistory"));
-      rhSnap.forEach(rh => {
-        const r = { id: rh.id, ...rh.data() };
-        if (!targetIds.has(r.id)) return;
-        countMap[r.id] = (countMap[r.id] || 0) + 1;
-
-        const list = raceIndex.get(r.id) || [];
-        const pos  = Number(r.position) || 9999;
-
-        list.push({ uid: u.id, name, position: pos });
-        raceIndex.set(r.id, list);
-      });
-    }
-
     ul.innerHTML = "";
     for (const r of rows) {
       const d     = formatDateFR(r.date) || r.date || "";
-      const total = countMap[r.id] || 1;
-      const pos   = (r.position ?? "?");
+      const title = [d, (r.name || r.race || r.track || "Course")].filter(Boolean).join(" – ");
 
       const li = document.createElement("li");
       li.className = "race-item";
 
       const btn = document.createElement("button");
       btn.className = "race-btn";
-      btn.textContent = `${d} – ${r.name || "Course"} : ${pos}/${total}`;
+      btn.textContent = `${title}`;
       btn.setAttribute("data-raceid", r.id);
 
       const details = document.createElement("div");
@@ -197,21 +375,79 @@ async function loadResults(uid) {
   }
 }
 
+/**
+ * Table EXACTE : Nom | Prénom | Voiture | Best lap | Gap leader | Pena | Points
+ * (Aucun graphe en dessous)
+ */
 async function renderRaceClassification(raceId, container, raceMeta) {
   try {
-    const arr = (raceIndex.get(raceId) || []).slice().sort((a, b) => a.position - b.position);
-    if (arr.length === 0) {
-      container.innerHTML = "<em>Pas d’informations de classement disponibles.</em>";
+    const courseDoc = await getDoc(doc(db, "courses", raceId));
+    if (!courseDoc.exists()) {
+      container.innerHTML = "<em>Pas de JSON admin pour cette course.</em>";
       return;
     }
 
-    const title = escapeHtml(raceMeta?.name || "Course");
-    let html = `<strong>Classement — ${title}</strong>`;
-    html += `<table class="race-table"><thead><tr><th>#</th><th>Pilote</th></tr></thead><tbody>`;
-    for (const item of arr) {
-      html += `<tr><td>${item.position}</td><td>${escapeHtml(item.name)}</td></tr>`;
+    await ensureSignupCache();
+
+    const c = courseDoc.data() || {};
+    const participants = Array.isArray(c.participants) ? c.participants.slice() : [];
+    if (participants.length === 0) {
+      container.innerHTML = "<em>Aucun participant dans le JSON admin.</em>";
+      return;
     }
-    html += `</tbody></table>`;
+
+    // Tri par position
+    participants.sort((a, b) => {
+      const pa = Number(pick(a, ["position","stats.position"])) || 999999;
+      const pb = Number(pick(b, ["position","stats.position"])) || 999999;
+      return pa - pb;
+    });
+    const leader = participants.find(p => Number(pick(p,["position","stats.position"])) === 1) || participants[0];
+
+    const title = escapeHtml(c.name || raceMeta?.name || "Course");
+    const dateTxt = formatDateFR(c.date) || formatDateFR(raceMeta?.date) || "";
+    const trackTxt = escapeHtml(c.track || c.circuit || raceMeta?.track || "");
+    const headerMeta = [
+      dateTxt && `📅 ${dateTxt}`,
+      trackTxt && `🏁 ${trackTxt}`,
+      c.split && `🅂 Split ${escapeHtml(String(c.split))}`,
+      c.round && `🔢 Round ${escapeHtml(String(c.round))}`
+    ].filter(Boolean).join(" • ");
+
+    let html = `<strong>Classement — ${title}</strong>`;
+    if (headerMeta) html += `<div class="muted-note" style="margin:6px 0 10px 0">${headerMeta}</div>`;
+
+    html += `<div style="overflow:auto"><table class="race-table fixed-cols"><thead><tr>
+      <th>Nom</th>
+      <th>Prénom</th>
+      <th>Voiture</th>
+      <th>Best lap</th>
+      <th>Gap leader</th>
+      <th>Pena</th>
+      <th>Points</th>
+    </tr></thead><tbody>`;
+
+    for (const p of participants) {
+      const { first, last } = splitNameParts(p);
+      const uid = pickUid(p);
+      const car       = pickCar(p);
+      const bestMs    = pickBestLapMs(p);
+      const gapText   = computeGapLeaderText(p, leader);
+      const penMs     = pickPenaltyMs(p);
+      const points    = await resolvePoints(uid, raceId, p);
+
+      html += `<tr>
+        <td>${escapeHtml((last||"").toString().toUpperCase())}</td>
+        <td>${escapeHtml(first)}</td>
+        <td>${escapeHtml(car)}</td>
+        <td>${bestMs != null ? msToClock(bestMs) : "—"}</td>
+        <td>${escapeHtml(gapText)}</td>
+        <td>${penMs  != null ? msToClock(penMs) : "—"}</td>
+        <td>${Number.isFinite(points) ? points : "—"}</td>
+      </tr>`;
+    }
+    html += `</tbody></table></div>`;
+
     container.innerHTML = html;
   } catch (e) {
     console.error(e);
@@ -268,7 +504,7 @@ async function loadPilotStats(uid) {
   }
 }
 
-/* ======================== ELO helper (même que côté admin) ======================== */
+/* ======================== ELO ======================== */
 function computeEloUpdates(rankingArr, ratingsMap, K = 32) {
   const N = rankingArr.length;
   if (N < 2) {
@@ -308,13 +544,11 @@ function computeEloUpdates(rankingArr, ratingsMap, K = 32) {
   return out;
 }
 
-/* ======================== M-Rating (classement + best/worst robustes) ======================== */
 async function loadMRating(uid) {
   const bestEl   = $("eloBest");
   const worstEl  = $("eloWorst");
   const rankLine = $("eloRankLine");
 
-  // 1) Valeur actuelle
   let current = 1000;
   try {
     const snap = await getDoc(doc(db, "users", uid));
@@ -325,26 +559,22 @@ async function loadMRating(uid) {
     }
   } catch {}
 
-  /* ---- A. Déterminer les pilotes ACTIFS (>= 1 course) à partir des 'courses' ---- */
   const coursesSnap = await getDocs(collection(db, "courses"));
   const courses = coursesSnap.docs.map(d => ({ id: d.id, ...d.data() }))
     .sort((a, b) => {
-      const da = a.date?.seconds ? new Date(a.date.seconds * 1000) : new Date(a.date || 0);
-      const db = b.date?.seconds ? new Date(b.date.seconds * 1000) : new Date(b.date || 0);
-      return da - db; // ascendant
+      const da = toDate(a.date) ?? new Date(a.date || 0);
+      const db = toDate(b.date) ?? new Date(b.date || 0);
+      return da - db;
     });
 
   const activeSet = new Set();
   courses.forEach(c => (c.participants || []).forEach(p => p?.uid && activeSet.add(p.uid)));
-  const activeUids = Array.from(activeSet);
-
-  /* ---- B. Classement global parmi ces actifs (tri sur eloRating actuel) ---- */
   try {
     const usersSnap = await getDocs(collection(db, "users"));
     const active = [];
     usersSnap.forEach(u => {
       const d = u.data() || {};
-      if (!activeSet.has(u.id)) return;      // seulement ceux qui ont au moins 1 course
+      if (!activeSet.has(u.id)) return;
       const val = Number(d.eloRating);
       active.push({ id: u.id, elo: Number.isNaN(val) ? 1000 : val });
     });
@@ -359,12 +589,9 @@ async function loadMRating(uid) {
     rankLine.textContent = "—";
   }
 
-  /* ---- C. Record personnel & plus faible valeur via REPLAY des courses ---- */
-  // On rejoue toutes les courses dans l’ordre avec la même formule que l’admin.
-  // On ne garde que la trajectoire du pilote courant.
-  const elo = new Map();              // uid -> elo courant (init 1000)
-  activeUids.forEach(u => elo.set(u, 1000));
-  const myTrace = [];                 // valeurs du pilote après chacune de ses courses
+  const elo = new Map();
+  [...activeSet].forEach(u => elo.set(u, 1000));
+  const myTrace = [];
 
   for (const c of courses) {
     const parts = (c.participants || [])
@@ -374,7 +601,6 @@ async function loadMRating(uid) {
 
     const ratingsMap = {};
     parts.forEach(p => { ratingsMap[p.uid] = elo.get(p.uid) ?? 1000; });
-
     const newRatings = computeEloUpdates(parts, ratingsMap, 32);
     parts.forEach(p => {
       const nr = newRatings[p.uid];
@@ -391,14 +617,13 @@ async function loadMRating(uid) {
   if (worstEl) worstEl.textContent = String(worst);
 }
 
-/* ======================== M-Safety (cartes) ======================== */
+/* ======================== M-Safety ======================== */
 async function loadMSafety(uid) {
   const box = $("esafetyIncidents");
   if (!box) return;
   box.innerHTML = "<p>Chargement…</p>";
 
   try {
-    // Charger les noms de courses
     const coursesSnap = await getDocs(collection(db, "courses"));
     const courseMap = new Map();
     coursesSnap.forEach(c => {
@@ -407,7 +632,6 @@ async function loadMSafety(uid) {
       courseMap.set(c.id, `${d.name || "Course"}${dateTxt ? ` (${dateTxt})` : ""}`);
     });
 
-    // Récup incidents (compat: sous-collection et collection globale)
     const gathered = [];
     try {
       const sub = await getDocs(collection(db, "users", uid, "incidents"));
@@ -453,7 +677,6 @@ async function loadMSafety(uid) {
       };
     }).sort((a,b)=> (b.date?.getTime?.() || 0) - (a.date?.getTime?.() || 0));
 
-    // Rendu avec titres
     let html = `<h4>Vos incidents</h4>`;
     for (const it of norm) {
       const d = it.date ? it.date.toLocaleString("fr-FR") : "—";
@@ -475,7 +698,7 @@ async function loadMSafety(uid) {
   }
 }
 
-/* ======================== Sous-menu ESTACUP ======================== */
+/* ======================== ESTACUP : sous-menu & classements ======================== */
 function setupEstacupSubnav() {
   const subnav = $("estacupSubnav");
   if (!subnav) return;
@@ -486,10 +709,14 @@ function showEstacupSub(key) {
   const blocks = {
     inscription: $("estacup-sub-inscription"),
     engages:     $("estacup-sub-engages"),
-    reclam:      $("estacup-sub-reclam")
+    reclam:      $("estacup-sub-reclam"),
+    rankpilots:  $("estacup-sub-rankpilots"),
+    rankteams:   $("estacup-sub-rankteams"),
   };
   Object.values(blocks).forEach(b => b && b.classList.add("hidden"));
   if (blocks[key]) blocks[key].classList.remove("hidden");
+  if (key === "rankpilots")  loadEstacupPilotStandings();
+  if (key === "rankteams")   loadEstacupTeamStandings();
 }
 
 function setupMekaQuestionnaire(userData) {
@@ -531,7 +758,6 @@ async function loadEstacupForm(userData, editing = false) {
   if (!container) return;
   container.innerHTML = "";
 
-  // Doc existant par uid (ID aléatoire)
   let existing = null, existingId = null;
   const qs = await getDocs(query(collection(db, "estacup_signups"), where("uid", "==", auth.currentUser.uid)));
   if (!qs.empty) { existing = qs.docs[0].data(); existingId = qs.docs[0].id; }
@@ -555,7 +781,6 @@ async function loadEstacupForm(userData, editing = false) {
 
   const DEFAULT_COLORS = { color1: "#000000", color2: "#01234A", color3: "#6BDAEC" };
 
-  // âge auto depuis DOB (si disponible)
   let age = existing?.age || "";
   const baseDob = firstDefined(userData.dob, userData.birthDate, userData.birthday, userData.dateNaissance, userData.naissance);
   const birth = toDate(baseDob);
@@ -574,23 +799,23 @@ async function loadEstacupForm(userData, editing = false) {
 
   const form = document.createElement("form");
   form.innerHTML = `
-    <input type="text" id="first" value="${escapeHtml(existing?.firstName || userData.firstName || "")}" placeholder="Prénom" required>
-    <input type="text" id="last" value="${escapeHtml(existing?.lastName || userData.lastName || "")}" placeholder="Nom" required>
-    <input type="number" id="age" value="${age ?? ""}" placeholder="Âge" required>
-    <input type="email" id="email" value="${escapeHtml(existing?.email || userData.email || '')}" placeholder="Email" required>
+    <input type="text" id="first" value="\${escapeHtml(existing?.firstName || userData.firstName || "")}" placeholder="Prénom" required>
+    <input type="text" id="last" value="\${escapeHtml(existing?.lastName || userData.lastName || "")}" placeholder="Nom" required>
+    <input type="number" id="age" value="\${age ?? ""}" placeholder="Âge" required>
+    <input type="email" id="email" value="\${escapeHtml(existing?.email || userData.email || '')}" placeholder="Email" required>
 
     <input type="text" id="steamId"
            inputmode="numeric"
            pattern="^765[0-9]{14}$"
-           value="${escapeHtml(existing?.steamId || '')}"
+           value="\${escapeHtml(existing?.steamId || '')}"
            placeholder="SteamID64 (17 chiffres, commence par 765…)"
            required>
     <small style="color:#94a3b8;margin-top:-6px;display:block;">
       Exemple : 7656119XXXXXXXXXX — (SteamID64). Tu peux le retrouver sur steamid.io
     </small>
 
-    <input type="text" id="team" value="${escapeHtml(existing?.teamName || '')}" placeholder="Équipe (ou espace)">
-    <input type="number" id="raceNumber" min="1" max="999" value="${existing?.raceNumber ?? ''}" placeholder="Numéro de course (1-999)" required>
+    <input type="text" id="team" value="\${escapeHtml(existing?.teamName || '')}" placeholder="Équipe (ou espace)">
+    <input type="number" id="raceNumber" min="1" max="999" value="\${existing?.raceNumber ?? ''}" placeholder="Numéro de course (1-999)" required>
     <div id="takenNumbers" class="taken-numbers"></div>
 
     <select id="car" required>
@@ -617,7 +842,6 @@ async function loadEstacupForm(userData, editing = false) {
   `;
   container.appendChild(form);
 
-  // preview voiture
   const carSelect = form.querySelector("#car");
   const carPreview = form.querySelector("#carPreview");
   const mapCarImg = {
@@ -633,7 +857,6 @@ async function loadEstacupForm(userData, editing = false) {
   setCarPreview();
   carSelect.addEventListener("change", setCarPreview);
 
-  // livery → couleurs
   const liverySelect = form.querySelector("#livery");
   const colors = form.querySelector("#colors");
   liverySelect.addEventListener("change", () => {
@@ -641,14 +864,12 @@ async function loadEstacupForm(userData, editing = false) {
     colors.style.display = showColors ? "block" : "none";
   });
 
-  // numéros pris
   const takenNumbers = form.querySelector("#takenNumbers");
   const nSnap = await getDocs(collection(db, "estacup_signups"));
   const taken = new Set();
   nSnap.forEach(d => { const n = d.data().raceNumber; if (n) taken.add(n); });
   takenNumbers.innerHTML = `Numéros déjà pris : ${[...taken].sort((a,b)=>a-b).join(", ") || "—"}`;
 
-  // submit
   form.addEventListener("submit", async e => {
     e.preventDefault();
 
@@ -674,7 +895,7 @@ async function loadEstacupForm(userData, editing = false) {
       carChoice: form.querySelector("#car").value,
       liveryChoice: liverySelect.value,
       raceNumber,
-      steamId, // 👈 nouveau champ
+      steamId,
       validated: false
     };
 
@@ -696,15 +917,17 @@ async function loadEstacupForm(userData, editing = false) {
       await addDoc(collection(db, "estacup_signups"), { ...payload, validated: false, uid: auth.currentUser.uid });
     }
 
+    // maj cache
+    signupCache.set(auth.currentUser.uid, { teamName: payload.teamName, raceNumber: payload.raceNumber, carChoice: payload.carChoice });
+
     alert("Inscription ESTACUP enregistrée !");
     loadEstacupEngages();
     loadEstacupForm(userData, false);
   });
 }
 
-
 async function loadEstacupEngages() {
- const container = $("estacupEngages");
+  const container = $("estacupEngages");
   if (!container) return;
   container.innerHTML = "<p>Chargement...</p>";
 
@@ -739,7 +962,6 @@ async function loadEstacupEngages() {
   });
 }
 
-
 $("submitReclam")?.addEventListener("click", async () => {
   const courseText = $("reclamCourse")?.value?.trim();
   const pilotsText = $("reclamPilotsText")?.value?.trim();
@@ -751,10 +973,10 @@ $("submitReclam")?.addEventListener("click", async () => {
       courseText, pilotsText, momentText, description: desc,
       uid: currentUid, date: new Date(), status: "pending"
     });
-    $("reclamCourse").value = "";
-    $("reclamPilotsText").value = "";
-    $("reclamMoment").value = "";
-    $("reclamDesc").value = "";
+  $("reclamCourse").value = "";
+  $("reclamPilotsText").value = "";
+  $("reclamMoment").value = "";
+  $("reclamDesc").value = "";
     await loadReclamHistory();
     alert("Réclamation envoyée !");
   } catch (e) {
@@ -791,3 +1013,189 @@ async function loadReclamHistory() {
     box.innerHTML = "<p>Erreur lors du chargement des réclamations.</p>";
   }
 }
+
+/* ======================== Classements ESTACUP ======================== */
+function isEstacupCourse(c) {
+  const tag = (s)=> (s||"").toString().toLowerCase();
+  const name = tag(c.name);
+  const series = tag(c.series || c.category || "");
+  const flag = (c.estacup === true) || name.includes("estacup") || series.includes("estacup") ||
+               (Array.isArray(c.tags) && c.tags.some(t => tag(t).includes("estacup")));
+  return !!flag;
+}
+function normTeamName(t) {
+  const s = (t||"").toString().trim();
+  return s === "" ? "(Sans équipe)" : s;
+}
+async function fetchAllEstacupCoursesSorted() {
+  const snap = await getDocs(collection(db, "courses"));
+  const arr = [];
+  snap.forEach(d => arr.push({ id: d.id, ...d.data() }));
+  const only = arr.filter(isEstacupCourse);
+  only.sort((a, b) => {
+    const da = toDate(a.date) ?? new Date(a.date || 0);
+    const db = toDate(b.date) ?? new Date(b.date || 0);
+    return da - db;
+  });
+  return only;
+}
+
+/* ---- Classement Pilotes ---- */
+async function loadEstacupPilotStandings() {
+  const host = $("estacupPilotStandings");
+  if (!host) return;
+  host.innerHTML = "<p>Calcul en cours…</p>";
+
+  try {
+    await ensureSignupCache();
+    const courses = await fetchAllEstacupCoursesSorted();
+    const perPilot = new Map(); // uid -> {uid, first,last,name, team, points, starts, wins, podiums}
+
+    for (const c of courses) {
+      const parts = Array.isArray(c.participants) ? c.participants : [];
+      const isSplit1 = Number(c.split) === 1 || c.split === undefined || c.split === null;
+
+      for (const p of parts) {
+        const uid  = pickUid(p);
+        if (!uid) continue;
+        const { first, last } = splitNameParts(p);
+        const name = `${first} ${last}`.trim() || (p.name || "Pilote");
+        const team = await resolveTeam(uid, c.id, p);
+        const pts  = await resolvePoints(uid, c.id, p);
+
+        if (!perPilot.has(uid)) perPilot.set(uid, { uid, first, last, name, team, points:0, starts:0, wins:0, podiums:0 });
+        const row = perPilot.get(uid);
+
+        row.points += pts;
+        row.starts += 1;
+
+        const pos = Number(p.position ?? p.stats?.position);
+        if (isSplit1 && Number.isFinite(pos)) {
+          if (pos === 1) row.wins += 1;
+          if (pos >= 1 && pos <= 3) row.podiums += 1;
+        }
+
+        if (team && team !== "(Sans équipe)") row.team = team;
+      }
+    }
+
+    const rows = [...perPilot.values()].sort((a,b)=>{
+      if (b.points  !== a.points)  return b.points - a.points;
+      if (b.wins    !== a.wins)    return b.wins   - a.wins;
+      if (b.podiums !== a.podiums) return b.podiums - a.podiums;
+      return (a.name||"").localeCompare(b.name||"");
+    });
+
+    if (rows.length === 0) {
+      host.innerHTML = "<p class='muted-note'>Aucune manche ESTACUP trouvée.</p>";
+      return;
+    }
+
+    let html = `<table class="table-standings"><thead><tr>
+      <th>#</th><th>Pilote</th><th>Équipe</th><th>Points</th><th>Victoires</th><th>Podiums</th><th>Départs</th>
+    </tr></thead><tbody>`;
+
+    rows.forEach((r, i) => {
+      const display = (r.last ? r.last.toUpperCase() : "") + (r.first ? ` ${r.first}` : (r.name ? ` ${r.name}`:""));
+      html += `<tr>
+        <td><span class="rank-badge">${i+1}</span></td>
+        <td>${escapeHtml(display.trim() || r.uid)}</td>
+        <td>${escapeHtml(r.team || "(Sans équipe)")}</td>
+        <td><strong>${r.points}</strong></td>
+        <td>${r.wins}</td>
+        <td>${r.podiums}</td>
+        <td>${r.starts}</td>
+      </tr>`;
+    });
+
+    html += `</tbody></table>`;
+    host.innerHTML = html;
+
+  } catch (e) {
+    console.error(e);
+    host.innerHTML = "<p>Erreur lors du calcul du classement pilotes.</p>";
+  }
+}
+
+/* ---- Classement Équipes ---- */
+async function loadEstacupTeamStandings() {
+  const host = $("estacupTeamStandings");
+  if (!host) return;
+  host.innerHTML = "<p>Calcul en cours…</p>";
+
+  try {
+    await ensureSignupCache();
+    const courses = await fetchAllEstacupCoursesSorted();
+    const perTeam = new Map(); // team -> {team, points, wins, podiums}
+
+    for (const c of courses) {
+      const parts = Array.isArray(c.participants) ? c.participants : [];
+      const byTeam = new Map();
+
+      const isSplit1 = Number(c.split) === 1 || c.split === undefined || c.split === null;
+
+      for (const p of parts) {
+        const uid  = pickUid(p);
+        if (!uid) continue;
+        const team = normTeamName(await resolveTeam(uid, c.id, p));
+        const pts  = await resolvePoints(uid, c.id, p);
+        const pos  = Number(p.position ?? p.stats?.position) || 9999;
+        if (!byTeam.has(team)) byTeam.set(team, []);
+        byTeam.get(team).push({ pts: Number.isFinite(pts) ? pts : 0, pos });
+      }
+
+      byTeam.forEach((arr, team) => {
+        arr.sort((a,b)=> (b.pts !== a.pts) ? (b.pts - a.pts) : (a.pos - b.pos));
+        const score = (arr[0]?.pts ?? 0) + (arr[1]?.pts ?? 0);
+
+        if (!perTeam.has(team)) perTeam.set(team, { team, points:0, wins:0, podiums:0 });
+        const agg = perTeam.get(team);
+        agg.points += score;
+
+        if (isSplit1) {
+          arr.forEach(r => {
+            if (Number.isFinite(r.pos)) {
+              if (r.pos === 1) agg.wins += 1;
+              if (r.pos >= 1 && r.pos <= 3) agg.podiums += 1;
+            }
+          });
+        }
+      });
+    }
+
+    const rows = [...perTeam.values()].sort((a,b)=>{
+      if (b.points !== a.points) return b.points - a.points;
+      if (b.wins   !== a.wins)   return b.wins   - a.wins;
+      if (b.podiums!== a.podiums)return b.podiums- a.podiums;
+      return (a.team||"").localeCompare(b.team||"");
+    });
+
+    if (rows.length === 0) {
+      host.innerHTML = "<p class='muted-note'>Aucune manche ESTACUP trouvée.</p>";
+      return;
+    }
+
+    let html = `<table class="table-standings"><thead><tr>
+      <th>#</th><th>Équipe</th><th>Points</th><th>Victoires</th><th>Podiums</th>
+    </tr></thead><tbody>`;
+
+    rows.forEach((r, i) => {
+      html += `<tr>
+        <td><span class="rank-badge">${i+1}</span></td>
+        <td>${escapeHtml(r.team)}</td>
+        <td><strong>${r.points}</strong></td>
+        <td>${r.wins}</td>
+        <td>${r.podiums}</td>
+      </tr>`;
+    });
+
+    html += `</tbody></table>`;
+    host.innerHTML = html;
+
+  } catch (e) {
+    console.error(e);
+    host.innerHTML = "<p>Erreur lors du calcul du classement équipes.</p>";
+  }
+}
+
+/* ======================== FIN ======================== */
