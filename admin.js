@@ -1,4 +1,5 @@
 // admin.js — Import JSON, pénalités (groupes), drag & drop inter-groupes
+// v2025-10-10 — Liste repliable + éditeur qui REMPLACE la liste (mode plein écran)
 // v2025-10-06 — FIX: Split visible en mode JSON même si ESTACUP = Non
 // v2025-10-04 — points auto vs manuel, refresh points après DnD, sections Pilotes & ESTACUP intégrées du n°1
 
@@ -55,13 +56,46 @@ function formatMs(ms) {
   const ms3 = String(ms % 1000).padStart(3, "0");
   return (h > 0 ? `${h}:${mm}:${ss}.${ms3}` : `${m}:${ss}.${ms3}`);
 }
-// helper (issu du n°1) pour trier par date, gère Firestore Timestamp/Date/string
 function toDateVal(v) {
   if (!v) return null;
   if (v?.seconds && typeof v.seconds === "number") return new Date(v.seconds * 1000);
-  if (typeof v?.toDate === "function") { try { return v.toDate(); } catch { /* ignore */ } }
+  if (typeof v?.toDate === "function") { try { return v.toDate(); } catch {} }
   const d = new Date(v);
   return isNaN(d) ? null : d;
+}
+function parseTimeLooseToMs(v, cap=6*60*60*1000) {
+  const s = String(v ?? "").trim();
+  if (!s) return null;
+  const suf = s.match(/^(\d+(?:\.\d+)?)\s*(ms|s)?$/i);
+  if (suf) {
+    const num = parseFloat(suf[1]);
+    const ms = !suf[2] || suf[2].toLowerCase()==="s" ? Math.round(num*1000) : Math.round(num);
+    return Math.min(ms, cap);
+  }
+  if (s.includes(":")) {
+    const parts = s.replace(",", ".").split(":").map(x=>x.trim());
+    const last = parseFloat(parts.pop());
+    if (Number.isNaN(last)) return null;
+    let mult = 1000, ms = Math.round(last*1000);
+    while(parts.length){
+      const n = parseInt(parts.pop(),10);
+      if(Number.isNaN(n)) return null;
+      ms += n*mult*60*1000;
+      mult*=60;
+    }
+    return Math.min(ms, cap);
+  }
+  const iso = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$/i.exec(s);
+  if (iso) {
+    const h=Number(iso[1]||0), m=Number(iso[2]||0), sec=Number(iso[3]||0);
+    return Math.min(Math.round(((h*60+m)*60+sec)*1000), cap);
+  }
+  const f = parseFloat(s.replace(",", "."));
+  if (Number.isFinite(f)) {
+    const ms = f>10000 ? Math.round(f) : Math.round(f*1000);
+    return Math.min(ms, cap);
+  }
+  return null;
 }
 
 /* ---------------- Import wizard state ---------------- */
@@ -73,7 +107,7 @@ const ImportState = {
   splitCount: 1,
   files: { sprintS1: null, mainS1: null, sprintS2: null, mainS2: null },
   parsed: { S1: { sprint: [], main: [] }, S2: { sprint: [], main: [] } },
-  nameMap: new Map(),     // "lastname firstname" -> { uid, suggested }
+  nameMap: new Map(),
   unmatched: [],
   usersCache: []
 };
@@ -92,9 +126,7 @@ onAuthStateChanged(auth, async (user) => {
   ensureRedLogoutButton();
   setupNavigation();
 
-  // ⚠️ Ajoutés depuis le n°1 :
-  setupPilotsSection();           // fiche pilote (recherche + formulaire + save)
-  // Chargements existants
+  setupPilotsSection();
   await loadPilots();
   await loadCourses();
   await loadIncidentHistory();
@@ -125,7 +157,7 @@ function setupNavigation() {
     sections.forEach((s) => s.classList.add("hidden"));
     document.getElementById(`section-${key}`)?.classList.remove("hidden");
     if (key === "incidents") { loadReclamations?.(); loadIncidentHistory?.(); loadCourses?.(); loadPilots?.(); }
-    if (key === "estacup") loadEstacupSignups?.();       // affichage réel (tri/édition)
+    if (key === "estacup") loadEstacupSignups?.();
     if (key === "courses") loadCourses?.();
     if (key === "pilots")  document.getElementById("refreshPilots")?.click();
   }
@@ -133,7 +165,7 @@ function setupNavigation() {
   showSection("results");
 }
 
-/* ---------------- Étapes UI ---------------- */
+/* ---------------- Étapes UI (import résultats) ---------------- */
 function setupResultsUI() {
   const isEstacupSel = $("isEstacup");
   const roundWrap = $("roundWrap");
@@ -143,7 +175,7 @@ function setupResultsUI() {
   roundWrap.style.display = "block";
   raceNameWrap.style.display = "none";
 
-  // ⬇️ FIX : le nombre de splits reste visible en mode JSON, même si ESTACUP = Non
+  // FIX : le nombre de splits reste visible en mode JSON même si ESTACUP = Non
   isEstacupSel.addEventListener("change", () => {
     const yes = isEstacupSel.value === "yes";
     splitCountWrap.style.display = $("modeJson").checked ? "block" : "none";
@@ -159,7 +191,6 @@ function setupResultsUI() {
       const mode = document.querySelector('input[name="inputMode"]:checked').value;
       manualBox.style.display = (mode === "manual") ? "block" : "none";
       jsonBox.style.display = (mode === "json") ? "block" : "none";
-      // ⬇️ FIX : affichage indépendamment d'ESTACUP
       $("splitCountWrap").style.display = (mode === "json") ? "block" : "none";
     })
   );
@@ -277,37 +308,54 @@ async function loadPilots() {
   pilotLiByUid.clear();
   ImportState.usersCache = [];
 
-  for (const docu of snap.docs) {
+  // récupérer et trier A→Z
+  const users = snap.docs.map(docu => {
     const d = docu.data(), uid = docu.id;
     const firstName = d.firstName || "", lastName = d.lastName || "";
     const name = `${firstName} ${lastName}`.trim() || "(Sans nom)";
-    ImportState.usersCache.push({
-      id: uid, firstName, lastName, email: d.email || "",
+    return {
+      id: uid, firstName, lastName, name,
+      email: d.email || "",
       teamName: d.teamName || d.team || "",
       carChoice: d.carChoice || d.car || "",
       _k: buildKey(lastName, firstName)
-    });
+    };
+  }).sort((a,b)=> a.lastName.localeCompare(b.lastName, 'fr', {sensitivity:'base'}) || a.firstName.localeCompare(b.firstName, 'fr', {sensitivity:'base'}));
+
+  for (const u of users) {
+    ImportState.usersCache.push(u);
 
     if (pilotList) {
-      const li = document.createElement("li"); li.dataset.uid = uid;
-      const nameSpan = document.createElement("span"); nameSpan.textContent = name;
+      const li = document.createElement("li"); li.dataset.uid = u.id;
+      const nameSpan = document.createElement("span"); nameSpan.textContent = u.name;
       const minusBtn = document.createElement("button");
       minusBtn.textContent = "–"; minusBtn.title = "Retirer du classement";
       minusBtn.style.marginLeft = "8px"; minusBtn.style.display = "none";
-      minusBtn.addEventListener("click", (e) => { e.stopPropagation(); removeFromRanking(uid); });
+      minusBtn.addEventListener("click", (e) => { e.stopPropagation(); removeFromRanking(u.id); });
       li.appendChild(nameSpan); li.appendChild(minusBtn);
       li.addEventListener("click", () => {
-        if (selectedUIDs.has(uid)) return;
-        ranking.push({ uid, name }); selectedUIDs.add(uid); renderRanking();
+        if (selectedUIDs.has(u.id)) return;
+        ranking.push({ uid: u.id, name: u.name }); selectedUIDs.add(u.id); renderRanking();
       });
       pilotList.appendChild(li);
-      pilotLiByUid.set(uid, { li, minusBtn });
+      pilotLiByUid.set(u.id, { li, minusBtn });
     }
     if (select) {
       const opt = document.createElement("option");
-      opt.value = uid; opt.textContent = name; select.appendChild(opt);
+      opt.value = u.id; opt.textContent = u.name; select.appendChild(opt);
     }
   }
+
+  // remplissage auto de tous les <select data-pilots="alpha">
+  document.querySelectorAll('select[data-pilots="alpha"]').forEach(sel=>{
+    const cur = sel.value;
+    sel.innerHTML = `<option value="">-- Pilote --</option>` + users.map(u=>{
+      const label = `${u.firstName} ${u.lastName}`.trim() || u.email || u.id;
+      return `<option value="${u.id}">${escapeHtml(label)}</option>`;
+    }).join("");
+    if (cur && users.some(u=>u.id===cur)) sel.value = cur;
+  });
+
   updatePilotListSelections();
 }
 function updatePilotListSelections() {
@@ -319,10 +367,145 @@ function updatePilotListSelections() {
   });
 }
 
-/* ========================= Import JSON ========================= */
-// (toutes les fonctions d’import JSON, pénalités, regroupement, rendu preview, sauvegarde)
-// … inchangées par rapport au n°2 (elles restent telles quelles)
+/* ---------------- Pilotes — section (search/refresh) ---------------- */
+/* ---------- Gestion Pilotes (édition admin) — repris du n°1 ---------- */
+function setupPilotsSection() {
+  const search = document.getElementById("pilotSearch");
+  const list = document.getElementById("pilotAdminList");
+  const refresh = document.getElementById("refreshPilots");
+  const form = document.getElementById("pilotForm");
+  const formEmpty = document.getElementById("pilotFormEmpty");
 
+  if (!list) return;
+
+  const f_first = document.getElementById("pf_firstName");
+  const f_last  = document.getElementById("pf_lastName");
+  const f_email = document.getElementById("pf_email");
+  const f_dob   = document.getElementById("pf_dob");
+  const f_lid   = document.getElementById("pf_licenseId");
+  const f_pts   = document.getElementById("pf_licensePoints");
+  const f_cls   = document.getElementById("pf_licenseClass");
+  const f_elo   = document.getElementById("pf_eloRating");
+  const btnSave = document.getElementById("pf_save");
+  const btnReset = document.getElementById("pf_reset");
+
+  let allPilots = [];
+  let current = null;
+
+  async function fetchPilots() {
+    list.innerHTML = "<li>Chargement…</li>";
+    const snap = await getDocs(collection(db, "users"));
+    allPilots = [];
+    list.innerHTML = "";
+    snap.forEach(d => { allPilots.push({ id: d.id, data: d.data() || {} }); });
+    renderPilotList();
+  }
+
+  function match(p, q) {
+    const txt = (q || "").trim().toLowerCase();
+    if (!txt) return true;
+    const d = p.data;
+    const name = `${d.firstName || ""} ${d.lastName || ""}`.toLowerCase();
+    const email = (d.email || "").toLowerCase();
+    return name.includes(txt) || email.includes(txt);
+  }
+
+  function renderPilotList() {
+    list.innerHTML = "";
+    const q = search?.value || "";
+    const items = allPilots
+      .filter(p => match(p, q))
+      .sort((a,b)=> {
+        const an = `${a.data.firstName||""} ${a.data.lastName||""}`.trim().toLowerCase();
+        const bn = `${b.data.firstName||""} ${b.data.lastName||""}`.trim().toLowerCase();
+        return an.localeCompare(bn);
+      });
+
+    if (items.length === 0) { list.innerHTML = "<li>Aucun pilote.</li>"; return; }
+
+    for (const p of items) {
+      const li = document.createElement("li");
+      const d = p.data;
+      const name = `${d.firstName || ""} ${d.lastName || ""}`.trim() || "(Sans nom)";
+      const cls = d.licenseClass || "Rookie";
+      li.innerHTML = `<strong>${name}</strong><br><small>${d.email || ""}</small><br><small>Classe: ${cls} • E-Safety: ${d.licensePoints ?? 10} • E-Rating: ${d.eloRating ?? 1000}</small>`;
+      li.style.cursor = "pointer";
+      li.onclick = () => selectPilot(p);
+      list.appendChild(li);
+    }
+  }
+
+  function toDateInput(val) {
+    try {
+      if (!val) return "";
+      if (val.seconds) {
+        const d = new Date(val.seconds*1000);
+        return d.toISOString().slice(0,10);
+      }
+      const d = new Date(val);
+      if (!isNaN(d)) return d.toISOString().slice(0,10);
+      return String(val);
+    } catch { return ""; }
+  }
+
+  function selectPilot(p) {
+    current = p;
+    formEmpty?.classList.add("hidden");
+    form?.classList.remove("hidden");
+
+    const d = p.data || {};
+    f_first.value = d.firstName || "";
+    f_last.value  = d.lastName || "";
+    f_email.value = d.email || "";
+    f_dob.value   = toDateInput(d.dob || d.birthDate || d.birthday || d.dateNaissance || d.naissance);
+    f_lid.value   = d.licenceId || d.licenseId || "";
+    f_pts.value   = (d.licensePoints ?? 10);
+    f_cls.value   = d.licenseClass || "Rookie";
+    f_elo.value   = d.eloRating ?? 1000;
+  }
+
+  btnSave?.addEventListener("click", async () => {
+    if (!current) return;
+    const ref = doc(db, "users", current.id);
+    const prevSnap = await getDoc(ref);
+    const prev = prevSnap.exists() ? prevSnap.data() : {};
+
+    const payload = {
+      ...prev,
+      firstName: f_first.value.trim() || prev.firstName || "",
+      lastName:  f_last.value.trim()  || prev.lastName  || "",
+      email:     f_email.value.trim() || prev.email     || "",
+      licenceId: f_lid.value.trim()   || prev.licenceId || prev.licenseId || "",
+      licenseId: f_lid.value.trim()   || prev.licenseId || prev.licenceId || "",
+      licensePoints: Number(f_pts.value) || 0,
+      licenseClass: f_cls.value || "Rookie"
+      // eloRating non modifié depuis ici
+    };
+
+    const dobStr = f_dob.value.trim();
+    if (dobStr) payload.dob = dobStr;
+
+    await setDoc(ref, payload);
+    alert("Pilote mis à jour.");
+    await fetchPilots();
+    const again = allPilots.find(x => x.id === current.id);
+    if (again) selectPilot(again);
+  });
+
+  btnReset?.addEventListener("click", () => {
+    if (!current) return;
+    selectPilot(current);
+    alert("Formulaire réinitialisé.");
+  });
+
+  refresh?.addEventListener("click", fetchPilots);
+  search?.addEventListener("input", renderPilotList);
+
+  fetchPilots();
+}
+
+
+/* ========================= Import JSON (parse) ========================= */
 function readFileAsJson(file) {
   return new Promise((resolve, reject) => {
     if (!file) return resolve(null);
@@ -332,7 +515,6 @@ function readFileAsJson(file) {
     fr.readAsText(file);
   });
 }
-
 function sanitizeTimeString(s) { return String(s || "").trim().split(/\s+/)[0]; }
 function parseIsoDurationToMs(s) {
   const m = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?$/i.exec(String(s || "").trim());
@@ -420,8 +602,7 @@ function extractLaps(it) {
 }
 
 /* ================== CLASSEMENT + PÉNALITÉS + OVERRIDE (DnD) ================== */
-function recomputePositions(rows) { /* ... code identique au n°2 ... */ 
-  // ——— pour la lisibilité ici, ce bloc est inchangé et nécessaire —
+function recomputePositions(rows) {
   if (!rows || rows.length === 0) return;
 
   rows.forEach(r => {
@@ -523,6 +704,52 @@ function recomputePositions(rows) { /* ... code identique au n°2 ... */
 }
 
 /* ---------- Extraction des résultats génériques ---------- */
+function smartSplitName(full) {
+  const s = String(full || "").trim().replace(/_/g, " ").replace(/\s+/g, " ");
+  if (!s) return { firstName: "", lastName: "" };
+  if (s.includes(",")) { const [ln, fn] = s.split(",").map(x => x.trim()); return { firstName: fn || "", lastName: ln || "" }; }
+  const t = s.split(" ");
+  if (t.length === 1) return { firstName: "", lastName: t[0] };
+  const isUpperLike = w => { const letters = (w.match(/[A-ZÀ-ÖØ-Ý]/gi) || []).join(""); return letters && letters === letters.toUpperCase(); };
+  if (t.length === 2) {
+    const [a, b] = t;
+    if (isUpperLike(a) && !isUpperLike(b)) return { firstName: b, lastName: a };
+    if (isUpperLike(b) && !isUpperLike(a)) return { firstName: a, lastName: b };
+    return { firstName: a, lastName: b };
+  }
+  const lastName = t[t.length - 1]; const firstName = t.slice(0, -1).join(" ");
+  return { firstName, lastName };
+}
+const CAR_NAME_MAP = {
+  "estacup_acura_nsx_gt3_evo2": "Acura NSX GT3 EVO 2",
+  "estacup_audi_r8_lms_gt3_evo_ii": "Audi R8 LMS GT3 EVO II",
+  "estacup_bmw_m4_gt3": "BMW M4 GT3",
+  "estacup_ferrari_296_gt3": "Ferrari 296 GT3",
+  "estacup_ford_mustang_gt3": "Ford Mustang GT3",
+  "estacup_lamborghini_huracan_gt3_evo2": "Lamborghini Huracan GT3 EVO2",
+  "estacup_lexus_rc_f_gt3": "Lexus RC F GT3",
+  "estacup_mclaren_720S_gt3_evo": "McLaren 720S GT3 EVO",
+  "estacup_mercedes_amg_gt3_evo": "Mercedes-AMG GT3 EVO",
+  "estacup_porsche_911_gt3_r": "Porsche 911 GT3 R",
+};
+function normalizeCarName(raw) {
+  let s = String(raw || "").trim();
+  if (!s) return "";
+  if (CAR_NAME_MAP[s]) return CAR_NAME_MAP[s];
+  let key = s.replace(/^estacup_/i, "");
+  if (CAR_NAME_MAP[key]) return CAR_NAME_MAP[key];
+  key = key.replace(/_/g, " ").trim();
+  key = key.replace(/\bgt3\b/ig, "GT3")
+    .replace(/\bevo ?ii\b/ig, "EVO II")
+    .replace(/\bevo\b/ig, "EVO");
+  return key.charAt(0).toUpperCase() + key.slice(1);
+}
+function carBrandFromName(normalized) {
+  const s = String(normalized || "").trim();
+  if (!s) return "";
+  if (/^Mercedes[- ]?AMG/i.test(s)) return "Mercedes-AMG";
+  return s.split(/\s+/)[0];
+}
 function extractResultsGeneric(json) {
   if (!json) return [];
   const rows = [];
@@ -586,170 +813,7 @@ function extractResultsGeneric(json) {
   return rows;
 }
 
-/* ---------- Noms, voitures (utilitaires) ---------- */
-function smartSplitName(full) {
-  const s = String(full || "").trim().replace(/_/g, " ").replace(/\s+/g, " ");
-  if (!s) return { firstName: "", lastName: "" };
-  if (s.includes(",")) { const [ln, fn] = s.split(",").map(x => x.trim()); return { firstName: fn || "", lastName: ln || "" }; }
-  const t = s.split(" ");
-  if (t.length === 1) return { firstName: "", lastName: t[0] };
-  const isUpperLike = w => { const letters = (w.match(/[A-ZÀ-ÖØ-Ý]/gi) || []).join(""); return letters && letters === letters.toUpperCase(); };
-  if (t.length === 2) {
-    const [a, b] = t;
-    if (isUpperLike(a) && !isUpperLike(b)) return { firstName: b, lastName: a };
-    if (isUpperLike(b) && !isUpperLike(a)) return { firstName: a, lastName: b };
-    return { firstName: a, lastName: b };
-  }
-  const lastName = t[t.length - 1]; const firstName = t.slice(0, -1).join(" ");
-  return { firstName, lastName };
-}
-const CAR_NAME_MAP = {
-  "estacup_acura_nsx_gt3_evo2": "Acura NSX GT3 EVO 2",
-  "estacup_audi_r8_lms_gt3_evo_ii": "Audi R8 LMS GT3 EVO II",
-  "estacup_bmw_m4_gt3": "BMW M4 GT3",
-  "estacup_ferrari_296_gt3": "Ferrari 296 GT3",
-  "estacup_ford_mustang_gt3": "Ford Mustang GT3",
-  "estacup_lamborghini_huracan_gt3_evo2": "Lamborghini Huracan GT3 EVO2",
-  "estacup_lexus_rc_f_gt3": "Lexus RC F GT3",
-  "estacup_mclaren_720S_gt3_evo": "McLaren 720S GT3 EVO",
-  "estacup_mercedes_amg_gt3_evo": "Mercedes-AMG GT3 EVO",
-  "estacup_porsche_911_gt3_r": "Porsche 911 GT3 R",
-};
-function normalizeCarName(raw) {
-  let s = String(raw || "").trim();
-  if (!s) return "";
-  if (CAR_NAME_MAP[s]) return CAR_NAME_MAP[s];
-  let key = s.replace(/^estacup_/i, "");
-  if (CAR_NAME_MAP[key]) return CAR_NAME_MAP[key];
-  key = key.replace(/_/g, " ").trim();
-  key = key.replace(/\bgt3\b/ig, "GT3")
-    .replace(/\bevo ?ii\b/ig, "EVO II")
-    .replace(/\bevo\b/ig, "EVO");
-  return key.charAt(0).toUpperCase() + key.slice(1);
-}
-function carBrandFromName(normalized) {
-  const s = String(normalized || "").trim();
-  if (!s) return "";
-  if (/^Mercedes[- ]?AMG/i.test(s)) return "Mercedes-AMG";
-  return s.split(/\s+/)[0];
-}
-
-/* ---------- Analyse JSON + matching + aperçu ---------- */
-async function handleAnalyzeJson() { /* identique au n°2 avec ImportState/preview */ 
-  // … (bloc complet conservé)
-  const A = (v) => Array.isArray(v) ? v : (v ? [v] : []);
-
-  ImportState.isEstacup = $("isEstacup")?.value === "yes";
-  ImportState.roundText = $("estcRoundText")?.value?.trim() || "";
-  ImportState.circuit = $("raceCircuit")?.value?.trim() || "";
-  ImportState.date = $("raceDate")?.valueAsDate || new Date();
-  ImportState.splitCount = parseInt($("splitCount")?.value, 10) || 1;
-
-  const jSprintS1 = await readFileAsJson(ImportState.files.sprintS1).catch(() => null);
-  const jMainS1 = await readFileAsJson(ImportState.files.mainS1).catch(() => null);
-  const jSprintS2 = (ImportState.splitCount === 2) ? await readFileAsJson(ImportState.files.sprintS2).catch(() => null) : null;
-  const jMainS2 = (ImportState.splitCount === 2) ? await readFileAsJson(ImportState.files.mainS2).catch(() => null) : null;
-
-  const s1s = extractResultsGeneric(jSprintS1) || [];
-  const s1m = extractResultsGeneric(jMainS1) || [];
-  const s2s = extractResultsGeneric(jSprintS2) || [];
-  const s2m = extractResultsGeneric(jMainS2) || [];
-
-  ImportState.parsed.S1 = { sprint: A(s1s), main: A(s1m) };
-  ImportState.parsed.S2 = { sprint: A(s2s), main: A(s2m) };
-
-  ImportState.nameMap.clear();
-  ImportState.unmatched = [];
-
-  const allImported = []
-    .concat(ImportState.parsed.S1.sprint || [],
-      ImportState.parsed.S1.main || [],
-      ImportState.parsed.S2.sprint || [],
-      ImportState.parsed.S2.main || []);
-
-  const seen = new Set();
-  for (const r of allImported) {
-    if (!r) continue;
-    const key = `${(r.lastName || "").toLowerCase()} ${(r.firstName || "").toLowerCase()}`.trim();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const match = suggestUserFor(r.lastName, r.firstName);
-    if (match) ImportState.nameMap.set(key, { uid: match.id, suggested: true });
-    else ImportState.unmatched.push({ key, lastName: r.lastName, firstName: r.firstName });
-  }
-
-  renderMatchingUI();
-  renderPreviewTables();
-}
-
-function suggestUserFor(lastName, firstName) {
-  const ln = normLower(lastName), fn = normLower(firstName);
-  let hit = ImportState.usersCache.find(u => u._k === buildKey(lastName, firstName)); if (hit) return hit;
-  hit = ImportState.usersCache.find(u => normLower(u.lastName) === ln); if (hit) return hit;
-  hit = ImportState.usersCache.find(u => normLower(u.lastName).startsWith(ln)); if (hit) return hit;
-  hit = ImportState.usersCache.find(u => normLower(u.lastName).includes(ln)); if (hit) return hit;
-  hit = ImportState.usersCache.find(u => normLower(u.lastName).includes(ln) && normLower(u.firstName).charAt(0) === fn.charAt(0)); if (hit) return hit;
-  return null;
-}
-
-function renderMatchingUI() {
-  const block = $("matchBlock");
-  const list = $("matchList");
-  if (!block || !list) return;
-
-  if (ImportState.unmatched.length === 0) {
-    block.style.display = "none";
-    list.innerHTML = "";
-    return;
-  }
-
-  block.style.display = "block";
-  list.innerHTML = "";
-
-  const sorted = ImportState.usersCache
-    .slice()
-    .sort((a, b) => `${a.lastName} ${a.firstName}`.localeCompare(`${b.lastName} ${b.firstName}`));
-
-  for (const u of ImportState.unmatched) {
-    const div = document.createElement("div");
-    div.style.marginBottom = "10px";
-
-    const label = document.createElement("label");
-    label.innerHTML = `<strong>${escapeHtml(u.lastName || "")} ${escapeHtml(u.firstName || "")}</strong> — sélectionner le pilote correspondant :`;
-
-    const sel = document.createElement("select");
-    sel.className = "match-select";
-    sel.dataset.key = u.key;
-
-    const opt0 = document.createElement("option");
-    opt0.value = "";
-    opt0.textContent = "-- Aucun / laisser non assigné --";
-    sel.appendChild(opt0);
-
-    sorted.forEach(p => {
-      const o = document.createElement("option");
-      o.value = p.id;
-      o.textContent = `${stripAccents(p.lastName || "").toUpperCase()} ${p.firstName || ""} (${p.email || "?"})`;
-      sel.appendChild(o);
-    });
-
-    div.appendChild(label);
-    div.appendChild(sel);
-    list.appendChild(div);
-  }
-}
-
-function applyMatchingSelections() {
-  document.querySelectorAll(".match-select").forEach(sel => {
-    const key = sel.dataset.key;
-    const uid = sel.value || null;
-    if (uid) ImportState.nameMap.set(key, { uid, suggested: false });
-  });
-  renderPreviewTables();
-  alert("Correspondances appliquées.");
-}
-
-/* ---------- Barèmes de points ESTACUP ---------- */
+/* ---------- Barèmes points ESTACUP ---------- */
 const ESTACUP_POINTS = {
   sprint: {
     split1: [25, 22, 20, 18, 16, 14, 12, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
@@ -894,10 +958,179 @@ function renderPreviewTables() {
   });
 }
 
-/* ---------- Sauvegarde ESTACUP: un doc par manche ---------- */
+/* ---------- Drag & Drop helpers ---------- */
+function reindexManualOrderForGroup(rows, effLaps) {
+  const group = rows.filter(r => (r._effLaps || 0) === effLaps);
+  group.forEach((r, i) => { r.manualOrder = i; });
+}
+function enableDragAndDropForBox(box, rowsRef) {
+  box.querySelectorAll('tbody[data-group]').forEach(tbody => {
+    tbody.addEventListener('dragover', (e) => { e.preventDefault(); });
+
+    tbody.querySelectorAll('tr[draggable="true"]').forEach((tr) => {
+      tr.addEventListener('dragstart', (e) => {
+        const ridx = Number(tr.getAttribute('data-idx'));
+        e.dataTransfer.setData('text/plain', String(ridx));
+        tr.classList.add('dragging');
+      });
+      tr.addEventListener('dragend', () => { tr.classList.remove('dragging'); });
+    });
+
+    tbody.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const fromRidx = Number(e.dataTransfer.getData('text/plain'));
+      if (!Number.isFinite(fromRidx) || !rowsRef[fromRidx]) return;
+      const movingRow = rowsRef[fromRidx];
+
+      const targetGroup = Number(tbody.dataset.group || 0);
+
+      const allTargetTr = Array.from(tbody.querySelectorAll('tr'))
+        .filter(tr => {
+          const ridx = Number(tr.getAttribute('data-idx'));
+          return Number.isFinite(ridx) && rowsRef[ridx];
+        });
+
+      const targetTr = e.target.closest('tr');
+      let toDomIdx = allTargetTr.indexOf(targetTr);
+      if (toDomIdx < 0) toDomIdx = allTargetTr.length;
+
+      const targetRows = allTargetTr.map(tr => rowsRef[Number(tr.getAttribute('data-idx'))]);
+
+      const prevIdxInTarget = targetRows.indexOf(movingRow);
+      if (prevIdxInTarget >= 0) {
+        targetRows.splice(prevIdxInTarget, 1);
+        if (toDomIdx > prevIdxInTarget) toDomIdx--;
+      }
+
+      movingRow._overrideGroup = targetGroup;
+
+      targetRows.splice(toDomIdx, 0, movingRow);
+      targetRows.filter(Boolean).forEach((r, i) => { r.manualOrder = i; });
+
+      const oldEff = movingRow._effLaps;
+      recomputePositions(rowsRef);
+
+      if (Number.isFinite(oldEff) && oldEff !== targetGroup) {
+        reindexManualOrderForGroup(rowsRef, oldEff);
+      }
+      renderPreviewTables();
+    });
+  });
+}
+
+/* ---------- Sauvegarde import (1 doc/manche) ---------- */
 function keyIsSprint(key) { return /_sprint$/i.test(key); }
 function keySplit(key) { return /S2_/i.test(key) ? 2 : 1; }
 
+async function handleAnalyzeJson() {
+  const A = (v) => Array.isArray(v) ? v : (v ? [v] : []);
+
+  ImportState.isEstacup = $("isEstacup")?.value === "yes";
+  ImportState.roundText = $("estcRoundText")?.value?.trim() || "";
+  ImportState.circuit = $("raceCircuit")?.value?.trim() || "";
+  ImportState.date = $("raceDate")?.valueAsDate || new Date();
+  ImportState.splitCount = parseInt($("splitCount")?.value, 10) || 1;
+
+  const jSprintS1 = await readFileAsJson(ImportState.files.sprintS1).catch(() => null);
+  const jMainS1 = await readFileAsJson(ImportState.files.mainS1).catch(() => null);
+  const jSprintS2 = (ImportState.splitCount === 2) ? await readFileAsJson(ImportState.files.sprintS2).catch(() => null) : null;
+  const jMainS2 = (ImportState.splitCount === 2) ? await readFileAsJson(ImportState.files.mainS2).catch(() => null) : null;
+
+  const s1s = extractResultsGeneric(jSprintS1) || [];
+  const s1m = extractResultsGeneric(jMainS1) || [];
+  const s2s = extractResultsGeneric(jSprintS2) || [];
+  const s2m = extractResultsGeneric(jMainS2) || [];
+
+  ImportState.parsed.S1 = { sprint: A(s1s), main: A(s1m) };
+  ImportState.parsed.S2 = { sprint: A(s2s), main: A(s2m) };
+
+  ImportState.nameMap.clear();
+  ImportState.unmatched = [];
+
+  const allImported = []
+    .concat(ImportState.parsed.S1.sprint || [],
+      ImportState.parsed.S1.main || [],
+      ImportState.parsed.S2.sprint || [],
+      ImportState.parsed.S2.main || []);
+
+  const seen = new Set();
+  for (const r of allImported) {
+    if (!r) continue;
+    const key = `${(r.lastName || "").toLowerCase()} ${(r.firstName || "").toLowerCase()}`.trim();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const match = suggestUserFor(r.lastName, r.firstName);
+    if (match) ImportState.nameMap.set(key, { uid: match.id, suggested: true });
+    else ImportState.unmatched.push({ key, lastName: r.lastName, firstName: r.firstName });
+  }
+
+  renderMatchingUI();
+  renderPreviewTables();
+}
+function suggestUserFor(lastName, firstName) {
+  const ln = normLower(lastName), fn = normLower(firstName);
+  let hit = ImportState.usersCache.find(u => u._k === buildKey(lastName, firstName)); if (hit) return hit;
+  hit = ImportState.usersCache.find(u => normLower(u.lastName) === ln); if (hit) return hit;
+  hit = ImportState.usersCache.find(u => normLower(u.lastName).startsWith(ln)); if (hit) return hit;
+  hit = ImportState.usersCache.find(u => normLower(u.lastName).includes(ln)); if (hit) return hit;
+  hit = ImportState.usersCache.find(u => normLower(u.lastName).includes(ln) && normLower(u.firstName).charAt(0) === fn.charAt(0)); if (hit) return hit;
+  return null;
+}
+function renderMatchingUI() {
+  const block = $("matchBlock");
+  const list = $("matchList");
+  if (!block || !list) return;
+
+  if (ImportState.unmatched.length === 0) {
+    block.style.display = "none";
+    list.innerHTML = "";
+    return;
+  }
+
+  block.style.display = "block";
+  list.innerHTML = "";
+
+  const sorted = ImportState.usersCache
+    .slice()
+    .sort((a, b) => `${a.lastName} ${a.firstName}`.localeCompare(`${b.lastName} ${b.firstName}`));
+
+  for (const u of ImportState.unmatched) {
+    const div = document.createElement("div");
+    div.style.marginBottom = "10px";
+
+    const label = document.createElement("label");
+    label.innerHTML = `<strong>${escapeHtml(u.lastName || "")} ${escapeHtml(u.firstName || "")}</strong> — sélectionner le pilote correspondant :`;
+
+    const sel = document.createElement("select");
+    sel.className = "match-select";
+    sel.dataset.key = u.key;
+
+    const opt0 = document.createElement("option");
+    opt0.value = "";
+    opt0.textContent = "-- Aucun / laisser non assigné --";
+    sel.appendChild(opt0);
+
+    sorted.forEach(p => {
+      const o = document.createElement("option");
+      o.value = p.id;
+      o.textContent = `${stripAccents(p.lastName || "").toUpperCase()} ${p.firstName || ""} (${p.email || "?"})`;
+      sel.appendChild(o);
+    });
+
+    div.appendChild(label);
+    div.appendChild(sel);
+    list.appendChild(div);
+  }
+}
+function applyMatchingSelections() {
+  document.querySelectorAll(".match-select").forEach(sel => {
+    const key = sel.dataset.key;
+    const uid = sel.value || null;
+    if (uid) ImportState.nameMap.set(key, { uid, suggested: false });
+  });
+  renderPreviewTables();
+  alert("Correspondances appliquées.");
+}
 async function saveImportedResults() {
   const baseName = buildBaseName();
   const raceDate = $("raceDate")?.valueAsDate || new Date();
@@ -934,7 +1167,7 @@ async function saveImportedResults() {
       const team = user?.teamName || r.team || "";
       const car = carBrandFromName(normalizeCarName(user?.carChoice || r.car || ""));
 
-      // ⚠️ Points : 0 par défaut si NON ESTACUP ; barème auto si ESTACUP ; override si saisi manuellement
+      // Points : 0 si NON ESTACUP ; barème auto si ESTACUP ; override si manuel
       const defaultPts = getDefaultPoints(isSprint, splitNum, r.position);
       const points = Number.isFinite(r._pointsManual) ? r._pointsManual : (ImportState.isEstacup ? defaultPts : 0);
 
@@ -1010,8 +1243,6 @@ async function saveImportedResults() {
   ImportState.nameMap.clear(); ImportState.unmatched = [];
   await loadCourses(); await loadIncidentHistory();
 }
-
-/* ---------- Nom course ---------- */
 function buildCourseHeader() {
   const baseName = buildBaseName();
   const raceDate = $("raceDate")?.valueAsDate || new Date();
@@ -1031,15 +1262,48 @@ function buildBaseName() {
   }
 }
 
-/* ---------- Courses (liste, suppression) + recalcul ELO ---------- */
+/* ============================================================================
+   COURSES — LISTE REPLIABLE + MODE ÉDITEUR EN REMPLACEMENT
+============================================================================ */
+function ensureEditorScreen() {
+  // conteneur plein écran pour l’éditeur (remplace la liste)
+  let scr = $("courseEditorScreen");
+  if (!scr) {
+    scr = document.createElement("div");
+    scr.id = "courseEditorScreen";
+    scr.style.display = "none";
+    const section = document.getElementById("section-courses") || document.body;
+    section.appendChild(scr);
+  }
+  return scr;
+}
+function enterEditorMode() {
+  const listWrap = document.getElementById("courseListWrap") || document.getElementById("courseList")?.parentElement || null;
+  if (listWrap) listWrap.style.display = "none";
+  ensureEditorScreen().style.display = "block";
+}
+function exitEditorMode() {
+  const listWrap = document.getElementById("courseListWrap") || document.getElementById("courseList")?.parentElement || null;
+  if (listWrap) listWrap.style.display = "";
+  const scr = ensureEditorScreen();
+  scr.style.display = "none";
+  scr.innerHTML = "";
+}
 async function loadCourses() {
   const courseList = document.getElementById("courseList");
   const raceSelect = document.getElementById("incidentRaceSelect");
-  if (courseList) courseList.innerHTML = ""; if (raceSelect) raceSelect.innerHTML = "";
+  if (courseList) courseList.innerHTML = "";
+  if (raceSelect) raceSelect.innerHTML = "";
+
   const snap = await getDocs(collection(db, "courses"));
   const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-    .sort((a, b) => ((a.date?.seconds ? new Date(a.date.seconds * 1000) : new Date(a.date || 0)) - (b.date?.seconds ? new Date(b.date.seconds * 1000) : new Date(b.date || 0))))
+    .sort((a, b) => {
+      const da = a.date?.seconds ? new Date(a.date.seconds * 1000) : new Date(a.date || 0);
+      const dbb = b.date?.seconds ? new Date(b.date.seconds * 1000) : new Date(b.date || 0);
+      return da - dbb;
+    })
     .reverse();
+
   courseMap = new Map();
   for (const course of docs) {
     courseMap.set(course.id, course);
@@ -1051,36 +1315,91 @@ async function loadCourses() {
       raceSelect.appendChild(opt);
     }
   }
+
   if (!courseList) return;
   if (docs.length === 0) { courseList.innerHTML = "<p>Aucune course.</p>"; return; }
   courseList.innerHTML = "";
+
+  // wrapper pour pouvoir masquer/afficher la liste facilement
+  if (!document.getElementById("courseListWrap")) {
+    const wrap = document.createElement("div");
+    wrap.id = "courseListWrap";
+    courseList.parentElement?.insertBefore(wrap, courseList);
+    wrap.appendChild(courseList);
+  }
+
+  // rendu repliable
   docs.forEach((course) => {
     const dateTxt = (course.date?.seconds ? new Date(course.date.seconds * 1000) : new Date(course.date || Date.now())).toLocaleDateString("fr-FR");
     const box = document.createElement("div");
     box.className = "course-box";
-    box.innerHTML = `<h4>${dateTxt} - ${course.name || "Course"}</h4>
-      <ul>${(course.participants || []).map((p) => `<li>${p.name || p.uid} — ${p.position}ᵉ (${p.points ?? 0} pts)</li>`).join("")}</ul>
-      <button class="delete-course" data-id="${course.id}">🗑️ Supprimer cette course</button>`;
+
+    const header = document.createElement("div");
+    header.className = "course-header";
+    header.style.display = "flex";
+    header.style.alignItems = "center";
+    header.style.justifyContent = "space-between";
+    header.style.cursor = "pointer";
+    header.innerHTML = `<h4 style="margin:0">${dateTxt} - ${escapeHtml(course.name || "Course")}</h4>
+      <span class="chevron" aria-hidden="true" style="user-select:none">▸</span>`;
+
+    const details = document.createElement("div");
+    details.className = "course-details";
+    details.style.display = "none";
+    details.innerHTML = `
+      <ul style="margin-top:8px">${(course.participants || [])
+        .map((p) => `<li>${escapeHtml(p.name || p.uid)} — ${p.position ?? "?"}ᵉ (${p.points ?? 0} pts)</li>`)
+        .join("")}</ul>
+      <div class="actions" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <button class="edit-course" data-id="${course.id}">✏️ Éditer</button>
+        <button class="delete-course" data-id="${course.id}">🗑️ Supprimer</button>
+      </div>`;
+
+    header.addEventListener("click", () => {
+      const open = details.style.display !== "none";
+      details.style.display = open ? "none" : "block";
+      const chev = header.querySelector(".chevron");
+      if (chev) chev.textContent = open ? "▸" : "▾";
+    });
+
+    box.appendChild(header);
+    box.appendChild(details);
     courseList.appendChild(box);
   });
+
+  // supprimer
   document.querySelectorAll(".delete-course").forEach((btn) => {
-    btn.addEventListener("click", async () => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
       const courseId = btn.dataset.id;
       if (!confirm("Confirmer la suppression de cette course ?")) return;
+
       await deleteDoc(doc(db, "courses", courseId));
+
+      // nettoyer raceHistory
       const usersSnap = await getDocs(collection(db, "users"));
       for (const user of usersSnap.docs) {
         const userId = user.id;
         const ref = doc(db, "users", userId, "raceHistory", courseId);
-        const snap = await getDoc(ref);
-        if (snap.exists()) await deleteDoc(ref);
+        const rh = await getDoc(ref);
+        if (rh.exists()) await deleteDoc(ref);
       }
       await recalcAllEloFromCourses();
       await loadCourses(); await loadIncidentHistory();
       alert("Course supprimée et ELO recalculés.");
     });
   });
+
+  // éditer → mode remplacement
+  document.querySelectorAll(".edit-course").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openCourseEditor(btn.dataset.id, { replaceList: true });
+    });
+  });
 }
+
+/* ---------- Recalc ELO global ---------- */
 async function recalcAllEloFromCourses() {
   const coursesSnap = await getDocs(collection(db, "courses"));
   const courses = coursesSnap.docs.map(d => ({ id: d.id, ...d.data() }))
@@ -1101,97 +1420,526 @@ async function recalcAllEloFromCourses() {
   for (const [uid, r] of elo.entries()) await updateDoc(doc(db, "users", uid), { eloRating: Math.round(r) });
 }
 
-/* ---------- Drag & Drop helpers ---------- */
-function reindexManualOrderForGroup(rows, effLaps) {
-  const group = rows.filter(r => (r._effLaps || 0) === effLaps);
-  group.forEach((r, i) => { r.manualOrder = i; });
+/* ============================================================================
+   ÉDITEUR DE COURSE — maintenant en “plein écran” à la place de la liste
+============================================================================ */
+function msToEditable(ms) {
+  if (!Number.isFinite(ms)) return "";
+  const h = Math.floor(ms/3600000);
+  const m = Math.floor((ms%3600000)/60000);
+  const s = (ms%60000)/1000;
+  const sFixed = s.toFixed(3).padStart(6,"0");
+  if (h>0) return `${h}:${String(m).padStart(2,"0")}:${sFixed}`;
+  return `${m}:${sFixed}`;
 }
-function enableDragAndDropForBox(box, rowsRef) {
-  box.querySelectorAll('tbody[data-group]').forEach(tbody => {
-    tbody.addEventListener('dragover', (e) => { e.preventDefault(); });
+async function openCourseEditor(courseId, opts = { replaceList: false }) {
+  const c = courseMap.get(courseId) || (await getDoc(doc(db,"courses",courseId)).then(s=>s.exists()?s.data():null));
+  if (!c) {
+    if (opts.replaceList) {
+      enterEditorMode();
+      ensureEditorScreen().innerHTML = `<div class="course-box"><p>Course introuvable.</p><button id="backToListBtn">⟵ Retour à la liste</button></div>`;
+      $("backToListBtn")?.addEventListener("click", exitEditorMode);
+    } else {
+      const panel = ensureCourseEditorShell(); panel.innerHTML = "<p>Course introuvable.</p>";
+    }
+    return;
+  }
 
-    tbody.querySelectorAll('tr[draggable="true"]').forEach((tr) => {
-      tr.addEventListener('dragstart', (e) => {
-        const ridx = Number(tr.getAttribute('data-idx'));
-        e.dataTransfer.setData('text/plain', String(ridx));
-        tr.classList.add('dragging');
-      });
-      tr.addEventListener('dragend', () => { tr.classList.remove('dragging'); });
+  // mode remplacement ?
+  let root;
+  if (opts.replaceList) {
+    enterEditorMode();
+    root = ensureEditorScreen();
+  } else {
+    root = ensureCourseEditorShell();
+  }
+
+  // users pour ajout
+  const usersSnap = await getDocs(collection(db, "users"));
+  const users = usersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+  const byId = new Map(users.map(u=>[u.id,u]));
+  const optionsUsers = users
+    .sort((a,b)=>(`${a.lastName||""} ${a.firstName||""}`).localeCompare(`${b.lastName||""} ${b.firstName||""}`))
+    .map(u => `<option value="${u.id}">${escapeHtml(`${u.lastName||""} ${u.firstName||""}`.trim() || u.email || u.id)}</option>`)
+    .join("");
+
+  const parts = (c.participants||[]).slice().sort((a,b)=>(a.position||999)-(b.position||999));
+
+  root.innerHTML = `
+    <div class="course-box">
+      <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap">
+        <h3 style="margin:0">Édition — ${escapeHtml(c.name||"Course")} <small style="opacity:.7">(${courseId})</small></h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button id="saveCourseBtn" style="font-weight:600">💾 Enregistrer</button>
+          <button id="closeEditorBtn">${opts.replaceList ? "⟵ Retour à la liste" : "Fermer l’éditeur"}</button>
+        </div>
+      </div>
+      <p style="margin:.5rem 0">Date: ${toDateVal(c.date)?.toLocaleString?.("fr-FR") || "—"} • Split: ${c.split||1} • Estacup: ${c.estacup? "Oui":"Non"}</p>
+      <div style="overflow:auto">
+        <table class="race-table" id="editTable">
+          <thead>
+            <tr>
+              <th>#</th><th>Pilote</th><th>UID</th><th>Équipe</th><th>Voiture</th>
+              <th>BestLap (mm:ss.mmm)</th><th>Total (mm:ss.mmm)</th><th>+Pena (s)</th><th>Tours</th><th>Statut</th><th>Points</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${parts.map((p,i)=>{
+              const u = byId.get(p.uid)||{};
+              return `<tr data-uid="${p.uid}">
+                <td><input class="ed-pos" type="number" min="1" value="${p.position||i+1}" style="width:64px;text-align:right"></td>
+                <td>${escapeHtml(p.name || `${u.firstName||""} ${u.lastName||""}`.trim() || p.uid)}</td>
+                <td><small>${escapeHtml(p.uid)}</small></td>
+                <td><input class="ed-team" value="${escapeHtml(p.team||u.teamName||"")}" placeholder="Équipe" style="min-width:120px"></td>
+                <td><input class="ed-car" value="${escapeHtml(p.car||u.carChoice||"")}" placeholder="Voiture" style="min-width:120px"></td>
+                <td><input class="ed-best" value="${msToEditable(p.bestLapMs)}" placeholder="m:ss.mmm" style="width:120px;text-align:right"></td>
+                <td><input class="ed-total" value="${msToEditable(p.totalMs)}" placeholder="m:ss.mmm" style="width:120px;text-align:right"></td>
+                <td><input class="ed-pen" type="number" step="0.001" min="0" value="${(p.penaltyMs||0)/1000}" style="width:90px;text-align:right"></td>
+                <td><input class="ed-laps" type="number" min="0" value="${p.laps ?? ""}" style="width:80px;text-align:right"></td>
+                <td>
+                  <select class="ed-status">
+                    <option value="OK" ${p.status==="OK"?"selected":""}>OK</option>
+                    <option value="DNF" ${p.status==="DNF"?"selected":""}>DNF</option>
+                    <option value="DSQ" ${p.status==="DSQ"?"selected":""}>DSQ</option>
+                    <option value="UNCLASSIFIED" ${p.status==="UNCLASSIFIED"?"selected":""}>UNCLASSIFIED</option>
+                  </select>
+                </td>
+                <td><input class="ed-pts" type="number" step="1" min="0" value="${p.points ?? 0}" style="width:80px;text-align:right"></td>
+                <td><button class="row-del">Retirer</button></td>
+              </tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px">
+        <label>Ajouter un pilote :</label>
+        <select id="addPilotSelect"><option value="">-- choisir --</option>${optionsUsers}</select>
+        <button id="addPilotBtn">➕ Ajouter</button>
+      </div>
+      <p class="muted" style="margin-top:8px">Astuce : modifie les positions (#). À la sauvegarde, les lignes sont triées par position.</p>
+    </div>
+  `;
+
+  // remove row
+  root.querySelectorAll(".row-del").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const tr = btn.closest("tr");
+      tr?.parentElement?.removeChild(tr);
     });
+  });
 
-    tbody.addEventListener('drop', (e) => {
-      e.preventDefault();
-      const fromRidx = Number(e.dataTransfer.getData('text/plain'));
-      if (!Number.isFinite(fromRidx) || !rowsRef[fromRidx]) return;
-      const movingRow = rowsRef[fromRidx];
+  // add pilot
+  root.querySelector("#addPilotBtn")?.addEventListener("click", ()=>{
+    const sel = root.querySelector("#addPilotSelect");
+    const uid = sel?.value || "";
+    if (!uid) return;
+    if (root.querySelector(`#editTable tbody tr[data-uid="${uid}"]`)) { alert("Pilote déjà présent."); return; }
+    const u = byId.get(uid) || {};
+    const name = `${u.firstName||""} ${u.lastName||""}`.trim() || u.email || uid;
+    const tbody = root.querySelector("#editTable tbody");
+    const tr = document.createElement("tr");
+    tr.dataset.uid = uid;
+    tr.innerHTML = `
+      <td><input class="ed-pos" type="number" min="1" value="${(tbody.children.length+1)}" style="width:64px;text-align:right"></td>
+      <td>${escapeHtml(name)}</td>
+      <td><small>${escapeHtml(uid)}</small></td>
+      <td><input class="ed-team" value="${escapeHtml(u.teamName||"")}" placeholder="Équipe" style="min-width:120px"></td>
+      <td><input class="ed-car" value="${escapeHtml(u.carChoice||"")}" placeholder="Voiture" style="min-width:120px"></td>
+      <td><input class="ed-best" value="" placeholder="m:ss.mmm" style="width:120px;text-align:right"></td>
+      <td><input class="ed-total" value="" placeholder="m:ss.mmm" style="width:120px;text-align:right"></td>
+      <td><input class="ed-pen" type="number" step="0.001" min="0" value="0" style="width:90px;text-align:right"></td>
+      <td><input class="ed-laps" type="number" min="0" value="" style="width:80px;text-align:right"></td>
+      <td>
+        <select class="ed-status">
+          <option value="OK" selected>OK</option>
+          <option value="DNF">DNF</option>
+          <option value="DSQ">DSQ</option>
+          <option value="UNCLASSIFIED">UNCLASSIFIED</option>
+        </select>
+      </td>
+      <td><input class="ed-pts" type="number" step="1" min="0" value="0" style="width:80px;text-align:right"></td>
+      <td><button class="row-del">Retirer</button></td>
+    `;
+    tbody.appendChild(tr);
+    tr.querySelector(".row-del").addEventListener("click", ()=>{ tr.remove(); });
+  });
 
-      const targetGroup = Number(tbody.dataset.group || 0);
+  // close/back
+  root.querySelector("#closeEditorBtn")?.addEventListener("click", ()=>{
+    if (opts.replaceList) exitEditorMode();
+    else root.innerHTML = "";
+  });
 
-      const allTargetTr = Array.from(tbody.querySelectorAll('tr'))
-        .filter(tr => {
-          const ridx = Number(tr.getAttribute('data-idx'));
-          return Number.isFinite(ridx) && rowsRef[ridx];
+  // save
+  root.querySelector("#saveCourseBtn")?.addEventListener("click", async ()=>{
+    try {
+      const tbody = root.querySelector("#editTable tbody");
+      const rows = Array.from(tbody.querySelectorAll("tr"));
+      if (rows.length === 0) {
+        if (!confirm("Aucun participant — cela videra la course. Continuer ?")) return;
+      }
+
+      const participants = rows.map(tr=>{
+        const uid = tr.dataset.uid;
+        const pos = Number(tr.querySelector(".ed-pos")?.value || 9999);
+        const team = tr.querySelector(".ed-team")?.value?.trim() || "";
+        const car  = tr.querySelector(".ed-car")?.value?.trim() || "";
+        const best = parseTimeLooseToMs(tr.querySelector(".ed-best")?.value);
+        const total= parseTimeLooseToMs(tr.querySelector(".ed-total")?.value);
+        const penS = parseFloat(tr.querySelector(".ed-pen")?.value || "0");
+        const laps = tr.querySelector(".ed-laps")?.value;
+        const status = tr.querySelector(".ed-status")?.value || "OK";
+        const pts  = Number(tr.querySelector(".ed-pts")?.value || 0);
+        const u = users.find(x=>x.id===uid) || {};
+        const name = (c.participants||[]).find(p=>p.uid===uid)?.name || `${u.firstName||""} ${u.lastName||""}`.trim() || u.email || uid;
+        return {
+          uid,
+          name,
+          position: Number.isFinite(pos)?pos:9999,
+          team,
+          car,
+          bestLapMs: Number.isFinite(best)?best:null,
+          totalMs: Number.isFinite(total)?total:null,
+          penaltyMs: Number.isFinite(penS) && penS>=0 ? Math.round(penS*1000) : 0,
+          laps: laps!=="" ? Number(laps) : null,
+          points: Number.isFinite(pts)?pts:0,
+          status
+        };
+      })
+      .filter(p=>p && p.uid)
+      .sort((a,b)=> (a.position||9999)-(b.position||9999))
+      .map((p,i)=> ({ ...p, position: i+1 }));
+
+      const previous = (c.participants||[]).map(p=>p.uid);
+      const nowUIDs = new Set(participants.map(p=>p.uid));
+
+      await updateDoc(doc(db,"courses",courseId), { participants });
+
+      for (const uid of previous) {
+        if (!nowUIDs.has(uid)) {
+          const ref = doc(db, "users", uid, "raceHistory", courseId);
+          const rh = await getDoc(ref);
+          if (rh.exists()) await deleteDoc(ref);
+        }
+      }
+      for (const p of participants) {
+        await setDoc(doc(db,"users",p.uid,"raceHistory",courseId), {
+          name: c.name || "Course",
+          date: c.date || new Date(),
+          position: p.position,
+          team: p.team || null,
+          car: p.car || null,
+          bestLapMs: p.bestLapMs ?? null,
+          totalMs: p.totalMs ?? null,
+          totalMsRaw: null,
+          penaltyMs: p.penaltyMs ?? 0,
+          laps: p.laps ?? null,
+          status: p.status || "OK",
+          points: p.points ?? 0
         });
-
-      const targetTr = e.target.closest('tr');
-      let toDomIdx = allTargetTr.indexOf(targetTr);
-      if (toDomIdx < 0) toDomIdx = allTargetTr.length;
-
-      const targetRows = allTargetTr.map(tr => rowsRef[Number(tr.getAttribute('data-idx'))]);
-
-      const prevIdxInTarget = targetRows.indexOf(movingRow);
-      if (prevIdxInTarget >= 0) {
-        targetRows.splice(prevIdxInTarget, 1);
-        if (toDomIdx > prevIdxInTarget) toDomIdx--;
       }
 
-      movingRow._overrideGroup = targetGroup;
+      await recalcAllEloFromCourses();
 
-      targetRows.splice(toDomIdx, 0, movingRow);
-      targetRows.filter(Boolean).forEach((r, i) => { r.manualOrder = i; });
-
-      const oldEff = movingRow._effLaps;
-      recomputePositions(rowsRef);
-
-      if (Number.isFinite(oldEff) && oldEff !== targetGroup) {
-        reindexManualOrderForGroup(rowsRef, oldEff);
-      }
-      renderPreviewTables();
-    });
+      alert("Résultats mis à jour.");
+      await loadCourses();
+      openCourseEditor(courseId, opts); // rester en mode éditeur
+    } catch (e) {
+      console.error(e);
+      alert("Erreur lors de l’enregistrement des modifications.");
+    }
   });
 }
 
-/* ---------- Historique incidents / Réclamations (placeholders) ---------- */
+// fallback éditeur en bas de page (si jamais)
+function ensureCourseEditorShell() {
+  let panel = document.getElementById("courseEditPanel");
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "courseEditPanel";
+    panel.className = "course-box";
+    panel.style.marginTop = "16px";
+    document.getElementById("courseList")?.parentElement?.appendChild(panel);
+  }
+  return panel;
+}
+
+/* ---------------- Historique incidents / Réclamations ---------------- */
 async function loadIncidentHistory() {
   const box = document.getElementById("incidentHistory");
   if (!box) return;
   box.innerHTML = `<p class="muted">Historique chargé.</p>`;
 }
+
+/* ======= RÉCLAMATIONS : inclut anciennes envoyées par admins + legacy ======= */
 async function loadReclamations() {
   const box = document.getElementById("reclamationsBox");
   if (!box) return;
-  box.innerHTML = `<p class="muted">Aucune réclamation à afficher.</p>`;
+
+  // Toolbar + container
+  box.innerHTML = `
+    <div id="reclamToolbar" class="toolbar" style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+      <select id="reclamFilter">
+        <option value="all">Toutes</option>
+        <option value="user">Reçues (pilotes)</option>
+        <option value="admin">Envoyées par admin</option>
+      </select>
+      <input id="reclamSearch" type="search" placeholder="Rechercher… (message, statut, pilote)" style="flex:1;min-width:220px" />
+      <button type="button" id="reclamRefresh">Actualiser</button>
+    </div>
+    <div id="reclamList" class="cards"></div>
+  `;
+
+  const listEl = document.getElementById("reclamList");
+  const filterEl = document.getElementById("reclamFilter");
+  const searchEl = document.getElementById("reclamSearch");
+  const refreshEl = document.getElementById("reclamRefresh");
+
+  let all = [];
+
+  function normalizeRow(d, id, roleHint = "") {
+    const row = { ...(d || {}) };
+    row._id = id;
+    // date fallback cascade
+    row._created = toDateVal(row.date) || toDateVal(row.createdAt) || toDateVal(row.sentAt) || toDateVal(row.time) || toDateVal(row.timestamp) || null;
+    // message/text fallback
+    row.message = row.message || row.text || row.body || row.content || "";
+    // role detection
+    const flagAdmin = row.isAdmin === true || row.fromAdmin === true || row.admin === true || row.senderRole === "admin" || row.createdBy === "admin" || roleHint === "admin";
+    const flagUser  = row.senderRole === "user" || row.createdBy === "user" || row.authorRole === "user";
+    row._authorRole = flagAdmin ? "admin" : (row.authorRole || (flagUser ? "user" : ""));
+    // status fallback
+    row.status = row.status || row.state || row.etat || "open";
+    // pilot uid fallback
+    row.pilotUid = row.pilotUid || row.uid || row.userId || row.driverUid || null;
+    // course id fallback
+    row.courseId = row.courseId || row.raceId || row.eventId || null;
+    // notes
+    row.adminNotes = row.adminNotes || row.notes || row.comment || "";
+    return row;
+  }
+
+  async function fetchCollection(name, roleHint = "") {
+    try {
+      const snap = await getDocs(collection(db, name));
+      return snap.docs.map(d => normalizeRow(d.data(), d.id, roleHint));
+    } catch (e) {
+      // collection peut ne pas exister — ignorer silencieusement
+      return [];
+    }
+  }
+
+  async function fetchAll() {
+    const main = await fetchCollection("reclamations", "");
+    const adminA = await fetchCollection("admin_reclamations", "admin");
+    const adminB = await fetchCollection("reclamations_admin", "admin");
+    const legacyClaims = await fetchCollection("claims", "");
+    const legacyTickets = await fetchCollection("tickets", "");
+    all = [...main, ...adminA, ...adminB, ...legacyClaims, ...legacyTickets];
+
+    // tri par plus récent
+    all.sort((a, b) => (b._created?.getTime?.() || 0) - (a._created?.getTime?.() || 0));
+  }
+
+  function statusLabel(s) {
+    const v = (s || "").toString().toLowerCase();
+    if (v === "in_progress" || v === "progress" || v === "en_cours") return "En cours";
+    if (v === "closed" || v === "close" || v === "fermee" || v === "résolue" || v === "resolved") return "Close";
+    return "Ouverte";
+  }
+
+  function pilotNameById(uid) {
+    const p = (ImportState.usersCache || []).find(x => x.id === uid);
+    return p ? `${p.firstName} ${p.lastName}`.trim() : "";
+  }
+
+  function dateStr(d) {
+    if (!d) return "—";
+    const dd = new Date(d);
+    const y = dd.getFullYear(), m = String(dd.getMonth()+1).padStart(2,"0"), da = String(dd.getDate()).padStart(2,"0");
+    const hh = String(dd.getHours()).padStart(2,"0"), mi = String(dd.getMinutes()).padStart(2,"0");
+    return `${da}/${m}/${y} ${hh}h${mi}`;
+  }
+
+  function applyFilters() {
+    const q = normLower(searchEl.value);
+    const mode = filterEl.value;
+    let rows = all.slice();
+    if (mode === "user") rows = rows.filter(r => r._authorRole !== "admin");
+    if (mode === "admin") rows = rows.filter(r => r._authorRole === "admin");
+    if (q) rows = rows.filter(r => {
+      const pile = [r.message, r.status, pilotNameById(r.pilotUid), r.adminNotes, r.courseId].join(" ");
+      return normLower(pile).includes(q);
+    });
+    renderList(rows);
+  }
+
+  function renderList(rows) {
+    listEl.innerHTML = "";
+    if (!rows.length) {
+      listEl.innerHTML = '<p class="muted">Aucune réclamation.</p>';
+      return;
+    }
+    for (const r of rows) {
+      const card = document.createElement("div");
+      card.className = "card";
+      card.style.cursor = "pointer";
+      card.style.marginBottom = "8px";
+      card.innerHTML = `
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
+          <div>
+            <div style="font-weight:600">${escapeHtml(r.message).slice(0,140)}${r.message.length>140?"…":""}</div>
+            <div class="muted" style="font-size:.9em">
+              ${dateStr(r._created)} · ${escapeHtml(statusLabel(r.status))}
+              ${r.pilotUid ? " · " + escapeHtml(pilotNameById(r.pilotUid)) : ""}
+              ${r.courseId ? " · course: " + escapeHtml(r.courseId) : ""}
+              ${r._authorRole ? " · " + (r._authorRole==="admin"?"admin":"pilote") : ""}
+            </div>
+          </div>
+          <div class="muted" style="white-space:nowrap">#${r._id.slice(0,6)}</div>
+        </div>`;
+      card.addEventListener("click", () => openEditor(r));
+      listEl.appendChild(card);
+    }
+  }
+
+  function courseOptionsHtml(selected) {
+    const entries = Array.from(courseMap.entries()).map(([id, c]) => {
+      const name = c?.name || c?.raceName || id;
+      const when = toDateVal(c?.date);
+      return { id, name, when };
+    });
+    entries.sort((a,b) => (b.when?.getTime?.()||0) - (a.when?.getTime?.()||0));
+    const opts = ['<option value="">-- Course --</option>'];
+    for (const e of entries) {
+      const sel = (e.id === selected) ? ' selected' : '';
+      opts.push(`<option value="${e.id}"${sel}>${escapeHtml(e.name)}</option>`);
+    }
+    return opts.join("");
+  }
+
+  function openEditor(row) {
+    const html = `
+      <div id="reclamEditor" class="card" style="padding:12px">
+        <button type="button" id="reclamBack" style="margin-bottom:8px">← Retour</button>
+        <h3 style="margin:0 0 8px 0">Réclamation #${row._id}</h3>
+        <div class="muted" style="margin-bottom:12px">${dateStr(row._created)}</div>
+
+        <label style="display:block;margin-bottom:6px;font-weight:600">Message</label>
+        <div class="muted" style="background:#1113; padding:8px; border-radius:8px; margin-bottom:12px">${escapeHtml(row.message)}</div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div>
+            <label class="muted">Pilote concerné</label>
+            <select id="reclamPilot" data-pilots="alpha"></select>
+          </div>
+          <div>
+            <label class="muted">Course liée</label>
+            <select id="reclamCourse">${courseOptionsHtml(row.courseId || "")}</select>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
+          <div>
+            <label class="muted">Statut</label>
+            <select id="reclamStatus">
+              <option value="open">Ouverte</option>
+              <option value="in_progress">En cours</option>
+              <option value="closed">Close</option>
+            </select>
+          </div>
+          <div>
+            <label class="muted">Auteur</label>
+            <input type="text" id="reclamAuthor" disabled value="${escapeHtml(row._authorRole || "")}" />
+          </div>
+        </div>
+
+        <div style="margin-top:12px">
+          <label class="muted" style="display:block">Notes admin</label>
+          <textarea id="reclamNotes" rows="4" style="width:100%"></textarea>
+        </div>
+
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button type="button" id="reclamSave">Enregistrer</button>
+          <button type="button" id="reclamDelete" class="danger">Supprimer</button>
+        </div>
+      </div>
+    `;
+    listEl.innerHTML = html;
+
+    // remplir select pilotes triés A→Z depuis le cache
+    const pilotSel = document.getElementById("reclamPilot");
+    pilotSel.setAttribute("data-pilots","alpha");
+    pilotSel.innerHTML = '<option value="">-- Pilote --</option>';
+    (ImportState.usersCache || []).forEach(p => {
+      const o = document.createElement("option");
+      const label = `${p.firstName} ${p.lastName}`.trim() || p.email || p.id;
+      o.value = p.id; o.textContent = label; pilotSel.appendChild(o);
+    });
+    if (row.pilotUid) pilotSel.value = row.pilotUid;
+
+    // autres champs
+    document.getElementById("reclamStatus").value = (row.status || "open");
+    document.getElementById("reclamNotes").value = row.adminNotes || "";
+
+    // handlers
+    document.getElementById("reclamBack").addEventListener("click", applyFilters);
+    document.getElementById("reclamSave").addEventListener("click", async () => {
+      const payload = {
+        pilotUid: pilotSel.value || null,
+        courseId: (document.getElementById("reclamCourse").value || "") || null,
+        status: document.getElementById("reclamStatus").value || "open",
+        adminNotes: document.getElementById("reclamNotes").value || "",
+        updatedAt: new Date()
+      };
+      // sauvegarder dans la collection qui contient l'item
+      const guessColl = row._id.includes("/") ? row._id.split("/")[0] : null;
+      try {
+        await updateDoc(doc(db, guessColl ? guessColl : "reclamations", row._id.replace(/^.*\//, "")), payload);
+      } catch (e) {
+        // fallback: principale
+        await updateDoc(doc(db, "reclamations", row._id), payload);
+      }
+      await fetchAll(); applyFilters();
+    });
+    document.getElementById("reclamDelete").addEventListener("click", async () => {
+      if (!confirm("Supprimer cette réclamation ?")) return;
+      try {
+        const guessColl = row._id.includes("/") ? row._id.split("/")[0] : null;
+        await deleteDoc(doc(db, guessColl ? guessColl : "reclamations", row._id.replace(/^.*\//, "")));
+      } catch (e) {
+        await deleteDoc(doc(db, "reclamations", row._id));
+      }
+      await fetchAll(); applyFilters();
+    });
+  }
+
+  refreshEl.addEventListener("click", async () => { await fetchAll(); applyFilters(); });
+  filterEl.addEventListener("change", applyFilters);
+  searchEl.addEventListener("input", applyFilters);
+
+  // premier chargement
+  await fetchAll();
+  applyFilters();
 }
 
-/* ---------- ESTACUP : listing complet (repris du n°1) ---------- */
+/* ---------------- ESTACUP : listing & édition inscriptions ---------------- */
 async function loadEstacupSignups() {
   const list = document.getElementById("estacupList");
   if (!list) return;
   list.innerHTML = "<p>Chargement…</p>";
 
-  // Récupère toutes les inscriptions
   const snap = await getDocs(collection(db, "estacup_signups"));
   if (snap.empty) {
     list.innerHTML = "<p>Aucune inscription.</p>";
     return;
   }
 
-  // Map user infos pour afficher nom complet si présent
   const usersSnap = await getDocs(collection(db, "users"));
   const usersById = new Map();
   usersSnap.forEach(u => usersById.set(u.id, u.data()));
 
-  // Regroupe en attente / validées
   const pending = [];
   const validated = [];
   snap.forEach(docu => {
@@ -1199,7 +1947,6 @@ async function loadEstacupSignups() {
     (d.validated ? validated : pending).push({ id: docu.id, d });
   });
 
-  // Tri paramétrable
   const sortSel = document.getElementById("estacupSort");
   const mode = sortSel?.value || "arrival";
 
@@ -1227,11 +1974,8 @@ async function loadEstacupSignups() {
 
   applySort(pending);
   applySort(validated);
-
-  // (ré)applique le tri si l’UI change
   sortSel?.addEventListener("change", () => loadEstacupSignups());
 
-  // Gabarit carte
   const cardHtml = (id, d) => {
     const u = usersById.get(d.uid) || {};
     const fullName = `${u.firstName || ""} ${u.lastName || ""}`.trim() || d.uid;
@@ -1269,7 +2013,6 @@ async function loadEstacupSignups() {
     `;
   };
 
-  // Render deux sections
   list.innerHTML = `
     <section style="margin-bottom:20px">
       <h3>⏳ En attente (${pending.length})</h3>
@@ -1287,7 +2030,7 @@ async function loadEstacupSignups() {
   pending.forEach(({ id, d }) => pendingRoot.insertAdjacentHTML("beforeend", cardHtml(id, d)));
   validated.forEach(({ id, d }) => validatedRoot.insertAdjacentHTML("beforeend", cardHtml(id, d)));
 
-  // Listeners
+  // handlers
   list.querySelectorAll(".save-signup").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.id;
@@ -1358,138 +2101,14 @@ async function loadEstacupSignups() {
   });
 }
 
-/* ---------- Gestion Pilotes (édition admin) — repris du n°1 ---------- */
-function setupPilotsSection() {
-  const search = document.getElementById("pilotSearch");
-  const list = document.getElementById("pilotAdminList");
-  const refresh = document.getElementById("refreshPilots");
-  const form = document.getElementById("pilotForm");
-  const formEmpty = document.getElementById("pilotFormEmpty");
+/* ---------------- Expose + Auto-load ---------------- */
+window.loadCourses = loadCourses;
 
-  if (!list) return;
-
-  const f_first = document.getElementById("pf_firstName");
-  const f_last  = document.getElementById("pf_lastName");
-  const f_email = document.getElementById("pf_email");
-  const f_dob   = document.getElementById("pf_dob");
-  const f_lid   = document.getElementById("pf_licenseId");
-  const f_pts   = document.getElementById("pf_licensePoints");
-  const f_cls   = document.getElementById("pf_licenseClass");
-  const f_elo   = document.getElementById("pf_eloRating");
-  const btnSave = document.getElementById("pf_save");
-  const btnReset = document.getElementById("pf_reset");
-
-  let allPilots = [];
-  let current = null;
-
-  async function fetchPilots() {
-    list.innerHTML = "<li>Chargement…</li>";
-    const snap = await getDocs(collection(db, "users"));
-    allPilots = [];
-    list.innerHTML = "";
-    snap.forEach(d => { allPilots.push({ id: d.id, data: d.data() || {} }); });
-    renderPilotList();
+document.addEventListener("DOMContentLoaded", () => {
+  if (
+    document.querySelector("#section-courses") &&
+    !document.querySelector("#section-courses").classList.contains("hidden")
+  ) {
+    loadCourses();
   }
-
-  function match(p, q) {
-    const txt = (q || "").trim().toLowerCase();
-    if (!txt) return true;
-    const d = p.data;
-    const name = `${d.firstName || ""} ${d.lastName || ""}`.toLowerCase();
-    const email = (d.email || "").toLowerCase();
-    return name.includes(txt) || email.includes(txt);
-  }
-
-  function renderPilotList() {
-    list.innerHTML = "";
-    const q = search?.value || "";
-    const items = allPilots
-      .filter(p => match(p, q))
-      .sort((a,b)=> {
-        const an = `${a.data.firstName||""} ${a.data.lastName||""}`.trim().toLowerCase();
-        const bn = `${b.data.firstName||""} ${b.data.lastName||""}`.trim().toLowerCase();
-        return an.localeCompare(bn);
-      });
-
-    if (items.length === 0) { list.innerHTML = "<li>Aucun pilote.</li>"; return; }
-
-    for (const p of items) {
-      const li = document.createElement("li");
-      const d = p.data;
-      const name = `${d.firstName || ""} ${d.lastName || ""}`.trim() || "(Sans nom)";
-      const cls = d.licenseClass || "Rookie";
-      li.innerHTML = `<strong>${name}</strong><br><small>${d.email || ""}</small><br><small>Classe: ${cls} • E-Safety: ${d.licensePoints ?? 10} • E-Rating: ${d.eloRating ?? 1000}</small>`;
-      li.style.cursor = "pointer";
-      li.onclick = () => selectPilot(p);
-      list.appendChild(li);
-    }
-  }
-
-  function toDateInput(val) {
-    try {
-      if (!val) return "";
-      if (val.seconds) {
-        const d = new Date(val.seconds*1000);
-        return d.toISOString().slice(0,10);
-      }
-      const d = new Date(val);
-      if (!isNaN(d)) return d.toISOString().slice(0,10);
-      return String(val);
-    } catch { return ""; }
-  }
-
-  function selectPilot(p) {
-    current = p;
-    formEmpty?.classList.add("hidden");
-    form?.classList.remove("hidden");
-
-    const d = p.data || {};
-    f_first.value = d.firstName || "";
-    f_last.value  = d.lastName || "";
-    f_email.value = d.email || "";
-    f_dob.value   = toDateInput(d.dob || d.birthDate || d.birthday || d.dateNaissance || d.naissance);
-    f_lid.value   = d.licenceId || d.licenseId || "";
-    f_pts.value   = (d.licensePoints ?? 10);
-    f_cls.value   = d.licenseClass || "Rookie";
-    f_elo.value   = d.eloRating ?? 1000;
-  }
-
-  btnSave?.addEventListener("click", async () => {
-    if (!current) return;
-    const ref = doc(db, "users", current.id);
-    const prevSnap = await getDoc(ref);
-    const prev = prevSnap.exists() ? prevSnap.data() : {};
-
-    const payload = {
-      ...prev,
-      firstName: f_first.value.trim() || prev.firstName || "",
-      lastName:  f_last.value.trim()  || prev.lastName  || "",
-      email:     f_email.value.trim() || prev.email     || "",
-      licenceId: f_lid.value.trim()   || prev.licenceId || prev.licenseId || "",
-      licenseId: f_lid.value.trim()   || prev.licenseId || prev.licenceId || "",
-      licensePoints: Number(f_pts.value) || 0,
-      licenseClass: f_cls.value || "Rookie"
-      // eloRating non modifié depuis ici
-    };
-
-    const dobStr = f_dob.value.trim();
-    if (dobStr) payload.dob = dobStr;
-
-    await setDoc(ref, payload);
-    alert("Pilote mis à jour.");
-    await fetchPilots();
-    const again = allPilots.find(x => x.id === current.id);
-    if (again) selectPilot(again);
-  });
-
-  btnReset?.addEventListener("click", () => {
-    if (!current) return;
-    selectPilot(current);
-    alert("Formulaire réinitialisé.");
-  });
-
-  refresh?.addEventListener("click", fetchPilots);
-  search?.addEventListener("input", renderPilotList);
-
-  fetchPilots();
-}
+});
