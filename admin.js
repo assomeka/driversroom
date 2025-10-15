@@ -2,7 +2,8 @@
 // v2025-10-10 — Liste repliable + éditeur qui REMPLACE la liste (mode plein écran)
 // v2025-10-06 — FIX: Split visible en mode JSON même si ESTACUP = Non
 // v2025-10-04 — points auto vs manuel, refresh points après DnD, sections Pilotes & ESTACUP intégrées du n°1
-// + v2025-10-15 — 👈 Ajout : onglet "Votes" (admin) — agrégation Round 3 & Round 5 + écoute temps réel
+// + v2025-10-15 — 👈 Ajout : onglet "Votes" (admin) — agrégation Round 3 & Round 5
+// + v2025-10-15-bis — Compat votes (q3/q5 et round3/round5) + fix barre B
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
@@ -18,7 +19,6 @@ import {
   addDoc,
   query,
   where,
-  onSnapshot, // <- pour temps réel votes
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 /* ---------------- Firebase ---------------- */
@@ -35,7 +35,6 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 
 /* ---------------- State ---------------- */
-let votesUnsub = null; // live listener for votes (admin)
 let ranking = [];
 let selectedPilots = [];
 let courseMap = new Map();
@@ -47,7 +46,7 @@ const $ = (id) => document.getElementById(id);
 const stripAccents = s => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 const normLower = s => stripAccents(s).toLowerCase().trim();
 const buildKey = (lastName, firstName) => `${normLower(lastName)} ${normLower(firstName)}`.trim();
-const escapeHtml = s => (s || "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+const escapeHtml = s => (s || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
 const firstInt = str => { const m = String(str || "").match(/-?\d+/); return m ? parseInt(m[0], 10) : NaN; };
 function formatMs(ms) {
   if (!Number.isFinite(ms) && ms !== 0) return "—";
@@ -157,19 +156,14 @@ function setupNavigation() {
   const buttons = document.querySelectorAll(".admin-menu button[data-section]");
   const sections = document.querySelectorAll(".admin-section");
   function showSection(key) {
-    // Arrêt du live si on quitte l'onglet votes
-    if (window.currentSection === "votes" && key !== "votes") {
-      if (votesUnsub) { votesUnsub(); votesUnsub = null; }
-    }
     sections.forEach((s) => s.classList.add("hidden"));
     document.getElementById(`section-${key}`)?.classList.remove("hidden");
     if (key === "incidents") { loadReclamations?.(); loadIncidentHistory?.(); loadCourses?.(); loadPilots?.(); }
     if (key === "estacup") loadEstacupSignups?.();
     if (key === "courses") loadCourses?.();
     if (key === "pilots")  document.getElementById("refreshPilots")?.click();
-    // 👇 votes : refresh immédiat + live
-    if (key === "votes") { loadVotesResults?.(); startVotesRealtime?.(); }
-    window.currentSection = key;
+    // 👇 recharge votes à l’ouverture (pas besoin de temps réel)
+    if (key === "votes")   loadVotesResults?.();
   }
   buttons.forEach((btn) => btn.addEventListener("click", () => showSection(btn.dataset.section)));
   showSection("results");
@@ -298,8 +292,7 @@ document.getElementById("submitIncident")?.addEventListener("click", async () =>
   await addDoc(collection(db, "incidents"), payload);
   for (const p of selectedPilots) await updateDoc(doc(db, "users", p.uid), { licensePoints: p.after });
   selectedPilots = []; updateIncidentList(); document.getElementById("incidentDescription").value = "";
-  alert("Incident enregistré.");
-  await loadIncidentHistory();
+  alert("Incident enregistré."); await loadIncidentHistory();
 });
 
 /* ---------------- Pilotes (liste pour Résultats/Incidents) ---------------- */
@@ -357,7 +350,7 @@ async function loadPilots() {
     }
   }
 
-  // remplissage auto des selects pilotables
+  // remplissage auto de tous les <select data-pilots="alpha">
   document.querySelectorAll('select[data-pilots="alpha"]').forEach(sel=>{
     const cur = sel.value;
     sel.innerHTML = `<option value="">-- Pilote --</option>` + users.map(u=>{
@@ -377,7 +370,9 @@ function updatePilotListSelections() {
     if (minusBtn) minusBtn.style.display = isSelected ? "inline-block" : "none";
   });
 }
+
 /* ---------------- Pilotes — section (search/refresh) ---------------- */
+/* ---------- Gestion Pilotes (édition admin) — repris du n°1 ---------- */
 function setupPilotsSection() {
   const search = document.getElementById("pilotSearch");
   const list = document.getElementById("pilotAdminList");
@@ -513,6 +508,7 @@ function setupPilotsSection() {
   fetchPilots();
 }
 
+
 /* ========================= Import JSON (parse) ========================= */
 function readFileAsJson(file) {
   return new Promise((resolve, reject) => {
@@ -579,7 +575,7 @@ function extractPenaltyMs(it) {
   let penMs = 0; const MAX_ENTRY = 30 * 60 * 1000;
   const addMs = (ms) => { if (ms == null || !isFinite(ms) || ms < 0) return; penMs += Math.min(ms, MAX_ENTRY); };
   const cap = 6 * 60 * 60 * 1000;
-  const singleFields = ["PenaltyTime","PenaltySeconds","PenaltyMs","PenaltyMS","Penalty","AddedTime","AddTime","TimeAdded","TimePenalty","RaceTimePenalty"];
+  const singleFields = ["PenaltyTime", "PenaltySeconds", "PenaltyMs", "PenaltyMS", "Penalty", "AddedTime", "AddTime", "TimeAdded", "TimePenalty", "RaceTimePenalty"];
   for (const k of singleFields) if (it[k] != null) addMs(toMsDuration(it[k], cap));
   const arrays = [];
   if (Array.isArray(it.Penalties)) arrays.push(it.Penalties);
@@ -824,12 +820,12 @@ function extractResultsGeneric(json) {
 /* ---------- Barèmes points ESTACUP ---------- */
 const ESTACUP_POINTS = {
   sprint: {
-    split1: [25,22,20,18,16,14,12,10,9,8,7,6,5,4,3,2,1],
-    split2: [6,5,4,3,3,2,2,2,1,1,1,1]
+    split1: [25, 22, 20, 18, 16, 14, 12, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+    split2: [6, 5, 4, 3, 3, 2, 2, 2, 1, 1, 1, 1]
   },
   main: {
-    split1: [50,46,42,38,34,30,28,26,24,22,20,18,16,14,12,10,9,8,7,6,5,4,3,2,1],
-    split2: [12,10,9,8,7,6,5,4,3,2,2,2,1,1,1]
+    split1: [50, 46, 42, 38, 34, 30, 28, 26, 24, 22, 20, 18, 16, 14, 12, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
+    split2: [12, 10, 9, 8, 7, 6, 5, 4, 3, 2, 2, 2, 1, 1, 1]
   }
 };
 function getDefaultPoints(isSprint, split, position) {
@@ -860,7 +856,7 @@ function renderPreviewTables() {
       <div style="overflow:auto"><table class="race-table">
       <thead><tr>
       <th>#</th><th>Nom</th><th>Prénom</th><th>Équipe</th><th>Voiture</th>
-      <th>Points</th><th>Best lap</th><th>Tours</th><th>Gap leader</th>
+      <th>Points</th><th>Best lap</th><th>Laps</th><th>Gap leader</th>
       <th>Pénalité JSON</th><th>Pénalité (s)</th><th></th><th>Total pénalité</th>
       </tr></thead>`;
 
@@ -1271,9 +1267,10 @@ function buildBaseName() {
 }
 
 /* ============================================================================
-// COURSES — LISTE REPLIABLE + MODE ÉDITEUR EN REMPLACEMENT
+   COURSES — LISTE REPLIABLE + MODE ÉDITEUR EN REMPLACEMENT
 ============================================================================ */
 function ensureEditorScreen() {
+  // conteneur plein écran pour l’éditeur (remplace la liste)
   let scr = $("courseEditorScreen");
   if (!scr) {
     scr = document.createElement("div");
@@ -1327,6 +1324,7 @@ async function loadCourses() {
   if (docs.length === 0) { courseList.innerHTML = "<p>Aucune course.</p>"; return; }
   courseList.innerHTML = "";
 
+  // wrapper pour pouvoir masquer/afficher la liste facilement
   if (!document.getElementById("courseListWrap")) {
     const wrap = document.createElement("div");
     wrap.id = "courseListWrap";
@@ -1334,6 +1332,7 @@ async function loadCourses() {
     wrap.appendChild(courseList);
   }
 
+  // rendu repliable
   docs.forEach((course) => {
     const dateTxt = (course.date?.seconds ? new Date(course.date.seconds * 1000) : new Date(course.date || Date.now())).toLocaleDateString("fr-FR");
     const box = document.createElement("div");
@@ -1426,7 +1425,7 @@ async function recalcAllEloFromCourses() {
 }
 
 /* ============================================================================
-// ÉDITEUR DE COURSE — plein écran
+   ÉDITEUR DE COURSE — maintenant en “plein écran” à la place de la liste
 ============================================================================ */
 function msToEditable(ms) {
   if (!Number.isFinite(ms)) return "";
@@ -1450,6 +1449,7 @@ async function openCourseEditor(courseId, opts = { replaceList: false }) {
     return;
   }
 
+  // mode remplacement ?
   let root;
   if (opts.replaceList) {
     enterEditorMode();
@@ -1458,6 +1458,7 @@ async function openCourseEditor(courseId, opts = { replaceList: false }) {
     root = ensureCourseEditorShell();
   }
 
+  // users pour ajout
   const usersSnap = await getDocs(collection(db, "users"));
   const users = usersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
   const byId = new Map(users.map(u=>[u.id,u]));
@@ -1491,7 +1492,7 @@ async function openCourseEditor(courseId, opts = { replaceList: false }) {
               const u = byId.get(p.uid)||{};
               return `<tr data-uid="${p.uid}">
                 <td><input class="ed-pos" type="number" min="1" value="${p.position||i+1}" style="width:64px;text-align:right"></td>
-                <td>${escapeHtml(p.name || `${u.firstName||""} ${u.lastName||""}`.trim() || u.email || p.uid)}</td>
+                <td>${escapeHtml(p.name || `${u.firstName||""} ${u.lastName||""}`.trim() || p.uid)}</td>
                 <td><small>${escapeHtml(p.uid)}</small></td>
                 <td><input class="ed-team" value="${escapeHtml(p.team||u.teamName||"")}" placeholder="Équipe" style="min-width:120px"></td>
                 <td><input class="ed-car" value="${escapeHtml(p.car||u.carChoice||"")}" placeholder="Voiture" style="min-width:120px"></td>
@@ -1675,62 +1676,388 @@ async function loadIncidentHistory() {
   box.innerHTML = `<p class="muted">Historique chargé.</p>`;
 }
 
-/* ======= RÉCLAMATIONS (exemple placeholder minimal) ======= */
+/* ======= RÉCLAMATIONS : inclut anciennes envoyées par admins + legacy ======= */
 async function loadReclamations() {
   const box = document.getElementById("reclamationsBox");
   if (!box) return;
-  box.innerHTML = `<p class="muted">Réclamations chargées.</p>`;
+
+  // Toolbar + container
+  box.innerHTML = `
+    <div id="reclamToolbar" class="toolbar" style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+      <select id="reclamFilter">
+        <option value="all">Toutes</option>
+        <option value="user">Reçues (pilotes)</option>
+        <option value="admin">Envoyées par admin</option>
+      </select>
+      <input id="reclamSearch" type="search" placeholder="Rechercher… (message, statut, pilote)" style="flex:1;min-width:220px" />
+      <button type="button" id="reclamRefresh">Actualiser</button>
+    </div>
+    <div id="reclamList" class="cards"></div>
+  `;
+
+  const listEl = document.getElementById("reclamList");
+  const filterEl = document.getElementById("reclamFilter");
+  const searchEl = document.getElementById("reclamSearch");
+  const refreshEl = document.getElementById("reclamRefresh");
+
+  let all = [];
+
+  function normalizeRow(d, id, roleHint = "") {
+    const row = { ...(d || {}) };
+    row._id = id;
+    // date fallback cascade
+    row._created = toDateVal(row.date) || toDateVal(row.createdAt) || toDateVal(row.sentAt) || toDateVal(row.time) || toDateVal(row.timestamp) || null;
+    // message/text fallback
+    row.message = row.message || row.text || row.body || row.content || "";
+    // role detection
+    const flagAdmin = row.isAdmin === true || row.fromAdmin === true || row.admin === true || row.senderRole === "admin" || row.createdBy === "admin" || roleHint === "admin";
+    const flagUser  = row.senderRole === "user" || row.createdBy === "user" || row.authorRole === "user";
+    row._authorRole = flagAdmin ? "admin" : (row.authorRole || (flagUser ? "user" : ""));
+    // status fallback
+    row.status = row.status || row.state || row.etat || "open";
+    // pilot uid fallback
+    row.pilotUid = row.pilotUid || row.uid || row.userId || row.driverUid || null;
+    // course id fallback
+    row.courseId = row.courseId || row.raceId || row.eventId || null;
+    // notes
+    row.adminNotes = row.adminNotes || row.notes || row.comment || "";
+    return row;
+  }
+
+  async function fetchCollection(name, roleHint = "") {
+    try {
+      const snap = await getDocs(collection(db, name));
+      return snap.docs.map(d => normalizeRow(d.data(), d.id, roleHint));
+    } catch (e) {
+      // collection peut ne pas exister — ignorer silencieusement
+      return [];
+    }
+  }
+
+  async function fetchAll() {
+    const main = await fetchCollection("reclamations", "");
+    const adminA = await fetchCollection("admin_reclamations", "admin");
+    const adminB = await fetchCollection("reclamations_admin", "admin");
+    const legacyClaims = await fetchCollection("claims", "");
+    const legacyTickets = await fetchCollection("tickets", "");
+    all = [...main, ...adminA, ...adminB, ...legacyClaims, ...legacyTickets];
+
+    // tri par plus récent
+    all.sort((a, b) => (b._created?.getTime?.() || 0) - (a._created?.getTime?.() || 0));
+  }
+
+  function statusLabel(s) {
+    const v = (s || "").toString().toLowerCase();
+    if (v === "in_progress" || v === "progress" || v === "en_cours") return "En cours";
+    if (v === "closed" || v === "close" || v === "fermee" || v === "résolue" || v === "resolved") return "Close";
+    return "Ouverte";
+  }
+
+  function pilotNameById(uid) {
+    const p = (ImportState.usersCache || []).find(x => x.id === uid);
+    return p ? `${p.firstName} ${p.lastName}`.trim() : "";
+  }
+
+  function dateStr(d) {
+    if (!d) return "—";
+    const dd = new Date(d);
+    const y = dd.getFullYear(), m = String(dd.getMonth()+1).padStart(2,"0"), da = String(dd.getDate()).padStart(2,"0");
+    const hh = String(dd.getHours()).padStart(2,"0"), mi = String(dd.getMinutes()).padStart(2,"0");
+    return `${da}/${m}/${y} ${hh}h${mi}`;
+  }
+
+  function applyFilters() {
+    const q = normLower(searchEl.value);
+    const mode = filterEl.value;
+    let rows = all.slice();
+    if (mode === "user") rows = rows.filter(r => r._authorRole !== "admin");
+    if (mode === "admin") rows = rows.filter(r => r._authorRole === "admin");
+    if (q) rows = rows.filter(r => {
+      const pile = [r.message, r.status, pilotNameById(r.pilotUid), r.adminNotes, r.courseId].join(" ");
+      return normLower(pile).includes(q);
+    });
+    renderList(rows);
+  }
+
+  function renderList(rows) {
+    listEl.innerHTML = "";
+    if (!rows.length) {
+      listEl.innerHTML = '<p class="muted">Aucune réclamation.</p>';
+      return;
+    }
+    for (const r of rows) {
+      const card = document.createElement("div");
+      card.className = "card";
+      card.style.cursor = "pointer";
+      card.style.marginBottom = "8px";
+      card.innerHTML = `
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
+          <div>
+            <div style="font-weight:600">${escapeHtml(r.message).slice(0,140)}${r.message.length>140?"…":""}</div>
+            <div class="muted" style="font-size:.9em">
+              ${dateStr(r._created)} · ${escapeHtml(statusLabel(r.status))}
+              ${r.pilotUid ? " · " + escapeHtml(pilotNameById(r.pilotUid)) : ""}
+              ${r.courseId ? " · course: " + escapeHtml(r.courseId) : ""}
+              ${r._authorRole ? " · " + (r._authorRole==="admin"?"admin":"pilote") : ""}
+            </div>
+          </div>
+          <div class="muted" style="white-space:nowrap">#${r._id.slice(0,6)}</div>
+        </div>`;
+      card.addEventListener("click", () => openEditor(r));
+      listEl.appendChild(card);
+    }
+  }
+
+  function courseOptionsHtml(selected) {
+    const entries = Array.from(courseMap.entries()).map(([id, c]) => {
+      const name = c?.name || c?.raceName || id;
+      const when = toDateVal(c?.date);
+      return { id, name, when };
+    });
+    entries.sort((a,b) => (b.when?.getTime?.()||0) - (a.when?.getTime?.()||0));
+    const opts = ['<option value="">-- Course --</option>'];
+    for (const e of entries) {
+      const sel = (e.id === selected) ? ' selected' : '';
+      opts.push(`<option value="${e.id}"${sel}>${escapeHtml(e.name)}</option>`);
+    }
+    return opts.join("");
+  }
+
+  function openEditor(row) {
+    const html = `
+      <div id="reclamEditor" class="card" style="padding:12px">
+        <button type="button" id="reclamBack" style="margin-bottom:8px">← Retour</button>
+        <h3 style="margin:0 0 8px 0">Réclamation #${row._id}</h3>
+        <div class="muted" style="margin-bottom:12px">${dateStr(row._created)}</div>
+
+        <label style="display:block;margin-bottom:6px;font-weight:600">Message</label>
+        <div class="muted" style="background:#1113; padding:8px; border-radius:8px; margin-bottom:12px">${escapeHtml(row.message)}</div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div>
+            <label class="muted">Pilote concerné</label>
+            <select id="reclamPilot" data-pilots="alpha"></select>
+          </div>
+          <div>
+            <label class="muted">Course liée</label>
+            <select id="reclamCourse">${courseOptionsHtml(row.courseId || "")}</select>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
+          <div>
+            <label class="muted">Statut</label>
+            <select id="reclamStatus">
+              <option value="open">Ouverte</option>
+              <option value="in_progress">En cours</option>
+              <option value="closed">Close</option>
+            </select>
+          </div>
+          <div>
+            <label class="muted">Auteur</label>
+            <input type="text" id="reclamAuthor" disabled value="${escapeHtml(row._authorRole || "")}" />
+          </div>
+        </div>
+
+        <div style="margin-top:12px">
+          <label class="muted" style="display:block">Notes admin</label>
+          <textarea id="reclamNotes" rows="4" style="width:100%"></textarea>
+        </div>
+
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button type="button" id="reclamSave">Enregistrer</button>
+          <button type="button" id="reclamDelete" class="danger">Supprimer</button>
+        </div>
+      </div>
+    `;
+    listEl.innerHTML = html;
+
+    // remplir select pilotes triés A→Z depuis le cache
+    const pilotSel = document.getElementById("reclamPilot");
+    pilotSel.setAttribute("data-pilots","alpha");
+    pilotSel.innerHTML = '<option value="">-- Pilote --</option>';
+    (ImportState.usersCache || []).forEach(p => {
+      const o = document.createElement("option");
+      const label = `${p.firstName} ${p.lastName}`.trim() || p.email || p.id;
+      o.value = p.id; o.textContent = label; pilotSel.appendChild(o);
+    });
+    if (row.pilotUid) pilotSel.value = row.pilotUid;
+
+    // autres champs
+    document.getElementById("reclamStatus").value = (row.status || "open");
+    document.getElementById("reclamNotes").value = row.adminNotes || "";
+
+    // handlers
+    document.getElementById("reclamBack").addEventListener("click", applyFilters);
+    document.getElementById("reclamSave").addEventListener("click", async () => {
+      const payload = {
+        pilotUid: pilotSel.value || null,
+        courseId: (document.getElementById("reclamCourse").value || "") || null,
+        status: document.getElementById("reclamStatus").value || "open",
+        adminNotes: document.getElementById("reclamNotes").value || "",
+        updatedAt: new Date()
+      };
+      // sauvegarder dans la collection qui contient l'item
+      const guessColl = row._id.includes("/") ? row._id.split("/")[0] : null;
+      try {
+        await updateDoc(doc(db, guessColl ? guessColl : "reclamations", row._id.replace(/^.*\//, "")), payload);
+      } catch (e) {
+        // fallback: principale
+        await updateDoc(doc(db, "reclamations", row._id), payload);
+      }
+      await fetchAll(); applyFilters();
+    });
+    document.getElementById("reclamDelete").addEventListener("click", async () => {
+      if (!confirm("Supprimer cette réclamation ?")) return;
+      try {
+        const guessColl = row._id.includes("/") ? row._id.split("/")[0] : null;
+        await deleteDoc(doc(db, guessColl ? guessColl : "reclamations", row._id.replace(/^.*\//, "")));
+      } catch (e) {
+        await deleteDoc(doc(db, "reclamations", row._id));
+      }
+      await fetchAll(); applyFilters();
+    });
+  }
+
+  refreshEl.addEventListener("click", async () => { await fetchAll(); applyFilters(); });
+  filterEl.addEventListener("change", applyFilters);
+  searchEl.addEventListener("input", applyFilters);
+
+  // premier chargement
+  await fetchAll();
+  applyFilters();
 }
 
-/* ======= ESTACUP — Inscriptions (lecture/édition) ======= */
+/* ---------------- ESTACUP : listing & édition inscriptions ---------------- */
 async function loadEstacupSignups() {
   const list = document.getElementById("estacupList");
   if (!list) return;
-  list.innerHTML = `<p class="muted">Chargement…</p>`;
+  list.innerHTML = "<p>Chargement…</p>";
 
   const snap = await getDocs(collection(db, "estacup_signups"));
-  const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-  items.sort((a,b)=> (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+  if (snap.empty) {
+    list.innerHTML = "<p>Aucune inscription.</p>";
+    return;
+  }
 
-  list.innerHTML = items.map(it => {
-    const num = it.raceNumber ?? it.number ?? "";
-    const team = it.teamName ?? "";
-    const car  = it.carChoice ?? "";
-    const livery = it.liveryChoice ?? "Libre";
-    const colors = it.liveryColors ?? {};
-    return `<div class="course-box" data-id="${it.id}">
-      <h4 style="margin:0 0 6px">${escapeHtml(it.lastName || "")} ${escapeHtml(it.firstName || "")} ${num?`<small>#${num}</small>`:""}</h4>
-      <div class="grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px">
-        <label>Équipe<br><input class="edit-team" value="${escapeHtml(team)}"></label>
-        <label>Voiture<br><input class="edit-car" value="${escapeHtml(car)}"></label>
-        <label>Livrée<br>
+  const usersSnap = await getDocs(collection(db, "users"));
+  const usersById = new Map();
+  usersSnap.forEach(u => usersById.set(u.id, u.data()));
+
+  const pending = [];
+  const validated = [];
+  snap.forEach(docu => {
+    const d = docu.data();
+    (d.validated ? validated : pending).push({ id: docu.id, d });
+  });
+
+  const sortSel = document.getElementById("estacupSort");
+  const mode = sortSel?.value || "arrival";
+
+  const timeKey = (d) =>
+    (toDateVal(d.validatedAt) || toDateVal(d.updatedAt) || toDateVal(d.createdAt) || new Date(0)).getTime();
+
+  const byArrival = (a, b) => timeKey(b.d) - timeKey(a.d);
+  const byName = (a, b) => {
+    const la = `${a.d.lastName || ""}`.toLowerCase();
+    const lb = `${b.d.lastName || ""}`.toLowerCase();
+    if (la !== lb) return la.localeCompare(lb);
+    const fa = `${a.d.firstName || ""}`.toLowerCase();
+    const fb = `${b.d.firstName || ""}`.toLowerCase();
+    return fa.localeCompare(fb);
+  };
+  const byNumber = (a, b) => (Number(a.d.raceNumber ?? 9999) - Number(b.d.raceNumber ?? 9999));
+
+  const applySort = (arr) => {
+    switch (mode) {
+      case "name":   arr.sort(byName);   break;
+      case "number": arr.sort(byNumber); break;
+      default:       arr.sort(byArrival);
+    }
+  };
+
+  applySort(pending);
+  applySort(validated);
+  sortSel?.addEventListener("change", () => loadEstacupSignups());
+
+  const cardHtml = (id, d) => {
+    const u = usersById.get(d.uid) || {};
+    const fullName = `${u.firstName || ""} ${u.lastName || ""}`.trim() || d.uid;
+    return `
+      <div class="course-box" data-id="${id}">
+        <h4>${fullName}</h4>
+        <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));align-items:center">
+          <input class="edit-first" value="${d.firstName || ""}" placeholder="Prénom" />
+          <input class="edit-last"  value="${d.lastName || ""}"  placeholder="Nom" />
+          <input class="edit-age"   type="number" value="${d.age || ""}"    placeholder="Âge" />
+          <input class="edit-email" value="${d.email || ""}"  placeholder="Email" />
+          <input class="edit-steam" value="${d.steamId || ""}" placeholder="SteamID64 (765… 17 chiffres)" />
+          <input class="edit-team"  value="${d.teamName || ""}" placeholder="Équipe" />
+          <input class="edit-car"   value="${d.carChoice || ""}" placeholder="Voiture" />
+          <input class="edit-number" type="number" min="1" max="999" value="${d.raceNumber ?? ""}" placeholder="N° de course (1-999)" />
           <select class="edit-livery">
-            <option ${livery==="Libre"?"selected":""}>Libre</option>
-            <option ${livery==="Livrée semi-perso"?"selected":""}>Livrée semi-perso</option>
+            <option value="Livrée perso" ${d.liveryChoice === "Livrée perso" ? "selected" : ""}>Livrée perso</option>
+            <option value="Livrée semi-perso" ${d.liveryChoice === "Livrée semi-perso" ? "selected" : ""}>Livrée semi-perso</option>
+            <option value="Livrée MEKA" ${d.liveryChoice === "Livrée MEKA" ? "selected" : ""}>Livrée MEKA</option>
           </select>
-        </label>
-        <div class="colors" style="display:${livery==="Livrée semi-perso"?"block":"none"}">
-          <label>Couleur 1<br><input class="edit-color1" type="color" value="${colors.color1||"#000000"}"></label>
-          <label>Couleur 2<br><input class="edit-color2" type="color" value="${colors.color2||"#000000"}"></label>
-          <label>Couleur 3<br><input class="edit-color3" type="color" value="${colors.color3||"#000000"}"></label>
+          <div class="colors" ${d.liveryChoice !== "Livrée semi-perso" ? "style='display:none'" : ""}>
+            <input type="color" class="edit-color1" value="${d.liveryColors?.color1 || "#000000"}" />
+            <input type="color" class="edit-color2" value="${d.liveryColors?.color2 || "#01234A"}" />
+            <input type="color" class="edit-color3" value="${d.liveryColors?.color3 || "#6BDAEC"}" />
+          </div>
+        </div>
+
+        <p style="margin-top:10px">Statut : ${d.validated ? "✅ Validé" : "⏳ En attente"}</p>
+        <div class="actions" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+          ${d.validated ? "" : `<button class="validate-signup" data-id="${id}">✅ Valider</button>`}
+          <button class="save-signup" data-id="${id}">💾 Enregistrer</button>
+          <button class="delete-signup" data-id="${id}">🗑️ Supprimer</button>
         </div>
       </div>
-      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-        <button class="save-signup" data-id="${it.id}">💾 Enregistrer</button>
-        <button class="validate-signup" data-id="${it.id}">✅ Valider</button>
-        <button class="delete-signup" data-id="${it.id}">🗑️ Supprimer</button>
-      </div>
-    </div>`;
-  }).join("");
+    `;
+  };
 
+  list.innerHTML = `
+    <section style="margin-bottom:20px">
+      <h3>⏳ En attente (${pending.length})</h3>
+      <div id="estacupListPending" style="display:flex;flex-direction:column;gap:12px"></div>
+    </section>
+    <section>
+      <h3>✅ Validées (${validated.length})</h3>
+      <div id="estacupListValidated" style="display:flex;flex-direction:column;gap:12px"></div>
+    </section>
+  `;
+
+  const pendingRoot = document.getElementById("estacupListPending");
+  const validatedRoot = document.getElementById("estacupListValidated");
+
+  pending.forEach(({ id, d }) => pendingRoot.insertAdjacentHTML("beforeend", cardHtml(id, d)));
+  validated.forEach(({ id, d }) => validatedRoot.insertAdjacentHTML("beforeend", cardHtml(id, d)));
+
+  // handlers
   list.querySelectorAll(".save-signup").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.id;
       const card = btn.closest(".course-box");
+
+      const steamId = (card.querySelector(".edit-steam").value || "").trim();
+      if (steamId && !/^765\d{14}$/.test(steamId)) {
+        alert("⚠️ SteamID64 invalide. Il doit faire 17 chiffres et commencer par 765.");
+        return;
+      }
+
       const payload = {
-        teamName: card.querySelector(".edit-team").value.trim(),
+        firstName: card.querySelector(".edit-first").value.trim(),
+        lastName:  card.querySelector(".edit-last").value.trim(),
+        age:       Number(card.querySelector(".edit-age").value) || null,
+        email:     card.querySelector(".edit-email").value.trim(),
+        steamId:   steamId,
+        teamName:  card.querySelector(".edit-team").value.trim(),
         carChoice: card.querySelector(".edit-car").value.trim(),
-        liveryChoice: card.querySelector(".edit-livery").value
+        raceNumber: Number(card.querySelector(".edit-number").value) || null,
+        liveryChoice: card.querySelector(".edit-livery").value,
+        liveryColors: null,
+        updatedAt: new Date()
       };
 
       if (payload.liveryChoice === "Livrée semi-perso") {
@@ -1779,10 +2106,13 @@ async function loadEstacupSignups() {
 }
 
 /* =======================================================================
-   VOTES (admin) : lecture + agrégation (v1: q3/q5 ; v2: round3/round5) + temps réel
-   👉 FIX: on ignore les documents non validés (locked === false)
+   👇 AJOUT — VOTES (admin) : lecture et agrégation estacup_votes
+   Compat : q3/q5 (ancien) OU round3/round5 (nouveau Dashboard)
 ======================================================================= */
-function normVote(val) { if (!val) return ""; return String(val).trim().toLowerCase().replace(/[^a-z]/g,""); }
+function normVote(val) {
+  if (!val) return "";
+  return String(val).trim().toLowerCase().replace(/[^a-z]/g,"");
+}
 function isShanghai(v){ const s=normVote(v); return s.startsWith("shang") || s.includes("shanghai"); }
 function isSepang(v){ const s=normVote(v); return s.includes("sepang"); }
 function isBahrain(v){ const s=normVote(v); return s.includes("bahrain"); }
@@ -1793,9 +2123,9 @@ function setVoteRow(prefix, aCnt, bCnt) {
   const aPct = total ? Math.round((aCnt/total)*100) : 0;
   const bPct = total ? 100 - aPct : 0;
 
-  const aCntEl = document.getElementById(`${prefix}_a_cnt`);
+  const aCntEl = document.getElementById(`${prefix}_a_cnt`); 
   const bCntEl = document.getElementById(`${prefix}_b_cnt`);
-  const aPctEl = document.getElementById(`${prefix}_a_pct`);
+  const aPctEl = document.getElementById(`${prefix}_a_pct`); 
   const bPctEl = document.getElementById(`${prefix}_b_pct`);
   const aBarEl = document.getElementById(`${prefix}_a_bar`);
   const bBarEl = document.getElementById(`${prefix}_b_bar`);
@@ -1806,49 +2136,33 @@ function setVoteRow(prefix, aCnt, bCnt) {
   if (aPctEl) aPctEl.textContent = `${aPct}%`;
   if (bPctEl) bPctEl.textContent = `${bPct}%`;
   if (aBarEl) aBarEl.style.width = `${aPct}%`;
-  if (bBarEl) bBarEl.style.width = `${bPct}%`;
+  if (bBarEl) bBarEl.style.width = `${bPct}%`; // ✅ fix: c'était aBarEl par erreur
   if (totEl)  totEl.textContent  = `Total : ${total}`;
 }
 
-/** Mappe la ligne de vote vers {r3,r5} peu importe le schéma */
-function getVoteValues(v) {
-  const r3 = (v && (v.round3 ?? v.q3)) ?? null;
-  const r5 = (v && (v.round5 ?? v.q5)) ?? null;
-  return { r3, r5 };
-}
-/** Agrège un snapshot (getDocs/onSnapshot) et pousse l'UI */
-function tallyVotesFromDocs(docs) {
-  const q3 = { a:0, b:0 };
-  const q5 = { a:0, b:0 };
+async function loadVotesResults() {
+  const q3 = { a:0, b:0 };  // a=Shanghai, b=Sepang
+  const q5 = { a:0, b:0 };  // a=Bahrain,  b=Losail
 
-  for (const d of docs) {
-    const v = d.data ? (d.data() || {}) : (d || {});
-    // 👉 Ne compter que les votes VALIDÉS ; legacy (pas de champ locked) est accepté
-    if (v.locked === false) continue;
-
-    const { r3, r5 } = getVoteValues(v);
+  const snap = await getDocs(collection(db, "estacup_votes"));
+  for (const d of snap.docs) {
+    const v = d.data() || {};
+    // ✅ compat : nouveau (round3/round5) prioritaire, sinon ancien (q3/q5)
+    const r3 = (v.round3 !== undefined && v.round3 !== null) ? v.round3 : v.q3;
+    const r5 = (v.round5 !== undefined && v.round5 !== null) ? v.round5 : v.q5;
 
     if (r3 !== undefined && r3 !== null) {
-      if (isShanghai(r3)) q3.a++; else if (isSepang(r3)) q3.b++;
+      if (isShanghai(r3)) q3.a++;
+      else if (isSepang(r3)) q3.b++;
     }
     if (r5 !== undefined && r5 !== null) {
-      if (isBahrain(r5)) q5.a++; else if (isLosail(r5)) q5.b++;
+      if (isBahrain(r5)) q5.a++;
+      else if (isLosail(r5)) q5.b++;
     }
   }
+
   setVoteRow("q3", q3.a, q3.b);
   setVoteRow("q5", q5.a, q5.b);
-}
-/** Refresh manuel à l'ouverture */
-async function loadVotesResults() {
-  const snap = await getDocs(collection(db, "estacup_votes"));
-  tallyVotesFromDocs(snap.docs);
-}
-/** Ecoute temps réel pendant que l'onglet est ouvert */
-function startVotesRealtime() {
-  if (votesUnsub) votesUnsub(); // évite doublons
-  votesUnsub = onSnapshot(collection(db, "estacup_votes"), (snap) => {
-    tallyVotesFromDocs(snap.docs);
-  });
 }
 
 /* ---------------- Expose + Auto-load ---------------- */

@@ -6,6 +6,7 @@
 // MAJ 2025-10-06-fixEstacupOnly : les classements ESTACUP ne comptent que les courses avec estacup === true
 // MAJ 2025-10-06-prioManualPoints : le dashboard affiche en priorité participants[].points (saisie admin)
 // MAJ 2025-10-15 : Sous-menu "Vote Circuit" + 2 questions (Round 3 & Round 5) + validation unique + drapeaux (flag-icons) + stockage Firestore estacup_votes
+// MAJ 2025-10-15-bis : Classement Équipes — ignore "(Sans équipe)" + loader animé pendant calcul (pilotes & équipes)
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
@@ -68,6 +69,8 @@ function firstDefined(...vals) {
   for (const v of vals) if (v !== undefined && v !== null && v !== "") return v;
   return undefined;
 }
+/* Loader HTML */
+const loaderHtml = (txt="Chargement…") => `<div class="loading-inline"><div class="spinner"></div><div>${escapeHtml(txt)}</div></div>`;
 
 /* ======================== État global / caches ======================== */
 let currentUid   = null;
@@ -1147,7 +1150,7 @@ async function fetchAllEstacupCoursesSorted() {
 async function loadEstacupPilotStandings() {
   const host = $("estacupPilotStandings");
   if (!host) return;
-  host.innerHTML = "<p>Calcul en cours…</p>";
+  host.innerHTML = loaderHtml("Calcul en cours…"); // spinner
 
   try {
     await ensureSignupCache();
@@ -1224,7 +1227,7 @@ async function loadEstacupPilotStandings() {
 async function loadEstacupTeamStandings() {
   const host = $("estacupTeamStandings");
   if (!host) return;
-  host.innerHTML = "<p>Calcul en cours…</p>";
+  host.innerHTML = loaderHtml("Calcul en cours…"); // spinner
 
   try {
     await ensureSignupCache();
@@ -1240,13 +1243,20 @@ async function loadEstacupTeamStandings() {
       for (const p of parts) {
         const uid  = pickUid(p);
         if (!uid) continue;
-        const team = normTeamName(await resolveTeam(uid, c.id, p));
+
+        // 🔴 Exclure les sans équipe dès la collecte
+        const teamNameRaw = await resolveTeam(uid, c.id, p);
+        const team = normTeamName(teamNameRaw);
+        if (team === "(Sans équipe)") continue;
+
         const pts  = await resolvePoints(uid, c.id, p);
         const pos  = Number(p.position ?? p.stats?.position) || 9999;
+
         if (!byTeam.has(team)) byTeam.set(team, []);
         byTeam.get(team).push({ pts: Number.isFinite(pts) ? pts : 0, pos });
       }
 
+      // agrégation course -> 2 meilleurs pilotes par équipe
       byTeam.forEach((arr, team) => {
         arr.sort((a,b)=> (b.pts !== a.pts) ? (b.pts - a.pts) : (a.pos - b.pos));
         const score = (arr[0]?.pts ?? 0) + (arr[1]?.pts ?? 0);
@@ -1274,7 +1284,7 @@ async function loadEstacupTeamStandings() {
     });
 
     if (rows.length === 0) {
-      host.innerHTML = "<p class='muted-note'>Aucune manche ESTACUP trouvée.</p>";
+      host.innerHTML = "<p class='muted-note'>Aucune équipe (hors “Sans équipe”) trouvée.</p>";
       return;
     }
 

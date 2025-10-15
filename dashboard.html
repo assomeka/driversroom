@@ -35,6 +35,11 @@
     .table-standings th,.table-standings td{padding:.75rem .9rem;border-bottom:1px solid #233047}
     .table-standings thead th{background:rgba(51,65,85,.5);text-align:left}
     .rank-badge{display:inline-block;min-width:2rem;text-align:center;background:#0b1220;border:1px solid #334155;border-radius:999px;padding:.2rem .5rem}
+
+    /* Loader animé (spinner) */
+    .loading-inline{display:flex;align-items:center;gap:.6rem;color:#cbd5e1}
+    .loading-inline .spinner{width:28px;height:28px;border:3px solid #334155;border-top-color:#38bdf8;border-radius:50%;animation:spin 1s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
   </style>
 </head>
 <body>
