@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="style.css" />
   <script type="module" src="dashboard.js" defer></script>
   <style>
+    /* Petits styles inline pour l’affichage déroulant des classements */
     .race-item { margin-bottom:10px; }
     .race-btn {
       background:#0b1220; border:1px solid #1e293b; color:#e2e8f0;
@@ -22,16 +23,6 @@
     .tag { display:inline-block; padding:2px 6px; border-radius:6px; border:1px solid #334155; font-size:.85rem; color:#cbd5e1; }
     .impact-bad { color:#f87171; font-weight:600; }
     .impact-good { color:#34d399; font-weight:600; }
-
-    .table-standings { width:100%; border-collapse: collapse; }
-    .table-standings th, .table-standings td { padding:8px 10px; border-bottom:1px solid #1e293b; }
-    .table-standings th { text-align:left; color:#cbd5e1; }
-    .rank-badge {
-      display:inline-block; min-width:28px; text-align:center; padding:2px 6px; border:1px solid #334155; border-radius:8px; background:#0a1020; color:#e2e8f0;
-    }
-    .course-box { border:1px solid #1e293b; background:#0b1220; border-radius:12px; padding:12px; margin:10px 0; }
-    .hidden { display:none; }
-    .logout { margin-left:auto; }
   </style>
 </head>
 <body>
@@ -42,6 +33,7 @@
   <div class="container">
     <h2>Driver's Room</h2>
 
+    <!-- Menu de navigation -->
     <nav class="menu">
       <button data-section="infos">Infos</button>
       <button data-section="results">Résultats</button>
@@ -52,6 +44,7 @@
       <button id="logout" class="logout">Déconnexion</button>
     </nav>
 
+    <!-- Section Infos -->
     <section id="section-infos" class="section">
       <h3>Informations du pilote</h3>
       <p><strong>Nom :</strong> <span id="fullName"></span></p>
@@ -71,29 +64,34 @@
       </ul>
     </section>
 
+    <!-- Section Résultats -->
     <section id="section-results" class="section hidden">
       <h3>Résultats</h3>
       <p class="muted-note">Clique sur une course pour afficher le <strong>classement complet</strong>.</p>
       <ul id="raceHistory"><li>Chargement.</li></ul>
     </section>
 
-    <section id="section-erating" class="section hidden">
-      <h3>M-Rating</h3>
-      <p><strong>M-Rating actuel :</strong> <span id="eloRating"></span></p>
+    <!-- Section M-Rating -->
+<section id="section-erating" class="section hidden">
+  <h3>M-Rating</h3>
+  <p><strong>M-Rating actuel :</strong> <span id="eloRating"></span></p>
 
-      <div id="eratingSummary" class="course-box" style="margin-top:12px">
-        <p><strong> Classement M-Rating global </strong><br><span id="eloRankLine">—</span></p>
-        <p style="margin-top:10px"><strong> Record personnel </strong><br><span id="eloBest">—</span></p>
-        <p style="margin-top:10px"><strong> Plus faible valeur </strong><br><span id="eloWorst">—</span></p>
-      </div>
-    </section>
+  <div id="eratingSummary" class="course-box" style="margin-top:12px">
+    <p><strong> Classement M-Rating global </strong><br><span id="eloRankLine">—</span></p>
+    <p style="margin-top:10px"><strong> Record personnel </strong><br><span id="eloBest">—</span></p>
+    <p style="margin-top:10px"><strong> Plus faible valeur </strong><br><span id="eloWorst">—</span></p>
+  </div>
+</section>
 
+
+    <!-- Section M-Safety -->
     <section id="section-esafety" class="section hidden">
       <h3>M-Safety</h3>
       <p><strong>Points de licence (M-Safety) :</strong> <span id="licensePoints"></span></p>
       <div id="esafetyIncidents"></div>
     </section>
 
+    <!-- Section ESTACUP -->
     <section id="section-estacup" class="section hidden">
       <h3>ESTACUP</h3>
 
@@ -101,12 +99,11 @@
         <button data-sub="inscription" class="estc-sub-btn">Inscription</button>
         <button data-sub="engages" class="estc-sub-btn">Liste des engagés</button>
         <button data-sub="reclam" class="estc-sub-btn">Réclamation</button>
-        <button data-sub="rankpilots" class="estc-sub-btn">Classement pilotes</button>
-        <button data-sub="rankteams" class="estc-sub-btn">Classement équipes</button>
       </nav>
 
       <div id="estacup-sub-inscription" class="estacup-subsection">
         <h4>Inscription ESTACUP</h4>
+
         <div id="mekaQuestionnaire">
           <p style="margin-bottom:10px;">
             ℹ️ L’inscription est <strong>gratuite</strong> pour les membres MEKA.<br>
@@ -133,30 +130,26 @@
 
       <div id="estacup-sub-reclam" class="estacup-subsection hidden">
         <h4>Réclamation</h4>
+
         <label for="reclamCourse">Course concernée (saisie manuelle) :</label>
         <input id="reclamCourse" type="text" placeholder="Ex. : Sprint Monza Split B • 12/10/2025" />
+
         <label for="reclamPilotsText">Pilote(s) concerné(s) (saisie manuelle) :</label>
         <input id="reclamPilotsText" type="text" placeholder="Ex. : Dupont Paul (#27), Martin Lea (#14)" />
+
         <label for="reclamMoment">Moment de l'incident (n° du tour, virage) :</label>
         <input id="reclamMoment" type="text" placeholder="Ex. : Tour 8, Variante della Roggia (T4/T5)" />
+
         <label for="reclamDesc">Description de l'incident :</label>
         <textarea id="reclamDesc" placeholder="Décrivez précisément l'incident..." rows="5"></textarea>
+
         <button id="submitReclam">📨 Envoyer la réclamation</button>
+
         <p class="livery-intro" style="margin-top:12px;">
           ℹ️ <strong>Note :</strong> la décision des commissaires sera visible dans <strong>M-Safety</strong>.
         </p>
+
         <div id="reclamHistory" style="margin-top:20px;"></div>
-      </div>
-
-      <div id="estacup-sub-rankpilots" class="estacup-subsection hidden">
-        <h4>Classement pilotes — Saison ESTACUP</h4>
-        <div id="estacupPilotStandings"></div>
-      </div>
-
-      <div id="estacup-sub-rankteams" class="estacup-subsection hidden">
-        <h4>Classement équipes — Saison ESTACUP</h4>
-        <p class="muted-note">Règle : à chaque manche, seuls les <strong>2 meilleurs pilotes</strong> d’une même équipe marquent des points pour l’équipe.</p>
-        <div id="estacupTeamStandings"></div>
       </div>
     </section>
   </div>
