@@ -1677,6 +1677,7 @@ async function loadIncidentHistory() {
 }
 
 /* ======= RÉCLAMATIONS : inclut anciennes envoyées par admins + legacy ======= */
+/* ======= RÉCLAMATIONS : inclut anciennes envoyées par admins + legacy ======= */
 async function loadReclamations() {
   const box = document.getElementById("reclamationsBox");
   if (!box) return;
@@ -1702,25 +1703,57 @@ async function loadReclamations() {
 
   let all = [];
 
+  function toDateVal(v) {
+    if (!v) return null;
+    if (v?.seconds) return new Date(v.seconds * 1000);
+    const d = new Date(v);
+    return isNaN(d) ? null : d;
+  }
+  const normLower = (s) => (s || "").toString().normalize("NFKD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+  const escapeHtml = (s) => (s||"").toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
   function normalizeRow(d, id, roleHint = "") {
     const row = { ...(d || {}) };
     row._id = id;
-    // date fallback cascade
-    row._created = toDateVal(row.date) || toDateVal(row.createdAt) || toDateVal(row.sentAt) || toDateVal(row.time) || toDateVal(row.timestamp) || null;
-    // message/text fallback
-    row.message = row.message || row.text || row.body || row.content || "";
-    // role detection
-    const flagAdmin = row.isAdmin === true || row.fromAdmin === true || row.admin === true || row.senderRole === "admin" || row.createdBy === "admin" || roleHint === "admin";
+
+    // date
+    row._created =
+      toDateVal(row.date) || toDateVal(row.createdAt) || toDateVal(row.sentAt) ||
+      toDateVal(row.time) || toDateVal(row.timestamp) || null;
+
+    // qui a écrit ?
+    const flagAdmin = row.isAdmin === true || row.fromAdmin === true || row.admin === true ||
+                      row.senderRole === "admin" || row.createdBy === "admin" || roleHint === "admin";
     const flagUser  = row.senderRole === "user" || row.createdBy === "user" || row.authorRole === "user";
     row._authorRole = flagAdmin ? "admin" : (row.authorRole || (flagUser ? "user" : ""));
-    // status fallback
+
+    // statuts
     row.status = row.status || row.state || row.etat || "open";
-    // pilot uid fallback
-    row.pilotUid = row.pilotUid || row.uid || row.userId || row.driverUid || null;
-    // course id fallback
+
+    // identifiants utiles
+    row.uid      = row.uid || row.userId || row.authorUid || row.pilotUid || row.driverUid || null; // plaignant
+    row.pilotUid = row.pilotUid || row.uid || row.userId || row.driverUid || null;                  // cible éventuelle
     row.courseId = row.courseId || row.raceId || row.eventId || null;
-    // notes
+
+    // notes admin
     row.adminNotes = row.adminNotes || row.notes || row.comment || "";
+
+    // champs saisis côté pilote
+    row.courseText  = row.courseText  || row.raceName || row.course || "";
+    row.pilotsText  = row.pilotsText  || row.pilots  || "";
+    row.momentText  = row.momentText  || row.moment  || "";
+    row.description = row.description || row.reason  || row.text || row.body || row.content || "";
+
+    // message synthèse (pour l’aperçu carte)
+    if (!row.message || !row.message.trim()) {
+      const parts = [];
+      if (row.courseText) parts.push(`Course: ${row.courseText}`);
+      if (row.pilotsText) parts.push(`Pilote(s): ${row.pilotsText}`);
+      if (row.momentText) parts.push(`Moment: ${row.momentText}`);
+      if (row.description) parts.push(row.description);
+      row.message = parts.join(" • ");
+    }
+
     return row;
   }
 
@@ -1728,28 +1761,25 @@ async function loadReclamations() {
     try {
       const snap = await getDocs(collection(db, name));
       return snap.docs.map(d => normalizeRow(d.data(), d.id, roleHint));
-    } catch (e) {
-      // collection peut ne pas exister — ignorer silencieusement
+    } catch {
       return [];
     }
   }
 
   async function fetchAll() {
-    const main = await fetchCollection("reclamations", "");
-    const adminA = await fetchCollection("admin_reclamations", "admin");
-    const adminB = await fetchCollection("reclamations_admin", "admin");
-    const legacyClaims = await fetchCollection("claims", "");
+    const main          = await fetchCollection("reclamations", "");
+    const adminA        = await fetchCollection("admin_reclamations", "admin");
+    const adminB        = await fetchCollection("reclamations_admin", "admin");
+    const legacyClaims  = await fetchCollection("claims", "");
     const legacyTickets = await fetchCollection("tickets", "");
-    all = [...main, ...adminA, ...adminB, ...legacyClaims, ...legacyTickets];
-
-    // tri par plus récent
-    all.sort((a, b) => (b._created?.getTime?.() || 0) - (a._created?.getTime?.() || 0));
+    all = [...main, ...adminA, ...adminB, ...legacyClaims, ...legacyTickets]
+      .sort((a, b) => (b._created?.getTime?.() || 0) - (a._created?.getTime?.() || 0));
   }
 
   function statusLabel(s) {
-    const v = (s || "").toString().toLowerCase();
-    if (v === "in_progress" || v === "progress" || v === "en_cours") return "En cours";
-    if (v === "closed" || v === "close" || v === "fermee" || v === "résolue" || v === "resolved") return "Close";
+    const v = (s || "").toLowerCase();
+    if (["in_progress","progress","en_cours"].includes(v)) return "En cours";
+    if (["closed","close","fermee","résolue","resolved"].includes(v)) return "Close";
     return "Ouverte";
   }
 
@@ -1770,10 +1800,13 @@ async function loadReclamations() {
     const q = normLower(searchEl.value);
     const mode = filterEl.value;
     let rows = all.slice();
-    if (mode === "user") rows = rows.filter(r => r._authorRole !== "admin");
+    if (mode === "user")  rows = rows.filter(r => r._authorRole !== "admin");
     if (mode === "admin") rows = rows.filter(r => r._authorRole === "admin");
     if (q) rows = rows.filter(r => {
-      const pile = [r.message, r.status, pilotNameById(r.pilotUid), r.adminNotes, r.courseId].join(" ");
+      const pile = [
+        r.message, r.status, pilotNameById(r.uid), pilotNameById(r.pilotUid),
+        r.adminNotes, r.courseText, r.pilotsText, r.momentText, r.description
+      ].join(" ");
       return normLower(pile).includes(q);
     });
     renderList(rows);
@@ -1790,48 +1823,49 @@ async function loadReclamations() {
       card.className = "card";
       card.style.cursor = "pointer";
       card.style.marginBottom = "8px";
+      const author = pilotNameById(r.uid) || "Inconnu";
       card.innerHTML = `
         <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
           <div>
-            <div style="font-weight:600">${escapeHtml(r.message).slice(0,140)}${r.message.length>140?"…":""}</div>
-            <div class="muted" style="font-size:.9em">
-              ${dateStr(r._created)} · ${escapeHtml(statusLabel(r.status))}
-              ${r.pilotUid ? " · " + escapeHtml(pilotNameById(r.pilotUid)) : ""}
-              ${r.courseId ? " · course: " + escapeHtml(r.courseId) : ""}
-              ${r._authorRole ? " · " + (r._authorRole==="admin"?"admin":"pilote") : ""}
-            </div>
+            <div style="font-weight:600">${escapeHtml(r.message).slice(0,140)}${r.message.length>140?'…':''}</div>
+            <div class="muted" style="margin-top:4px">${escapeHtml(author)} • ${escapeHtml(statusLabel(r.status))}</div>
           </div>
-          <div class="muted" style="white-space:nowrap">#${r._id.slice(0,6)}</div>
-        </div>`;
-      card.addEventListener("click", () => openEditor(r));
+          <div class="muted">${escapeHtml(dateStr(r._created))}</div>
+        </div>
+      `;
+      card.addEventListener("click", () => openDetailCard(r));
       listEl.appendChild(card);
     }
   }
 
-  function courseOptionsHtml(selected) {
-    const entries = Array.from(courseMap.entries()).map(([id, c]) => {
-      const name = c?.name || c?.raceName || id;
-      const when = toDateVal(c?.date);
-      return { id, name, when };
-    });
-    entries.sort((a,b) => (b.when?.getTime?.()||0) - (a.when?.getTime?.()||0));
-    const opts = ['<option value="">-- Course --</option>'];
-    for (const e of entries) {
-      const sel = (e.id === selected) ? ' selected' : '';
-      opts.push(`<option value="${e.id}"${sel}>${escapeHtml(e.name)}</option>`);
+  function courseOptionsHtml(selectedId) {
+    // options de courses préchargées dans courseMap (via loadCourses)
+    const keys = Array.from(courseMap?.keys?.() || []);
+    const opts = ['<option value="">— Course —</option>'];
+    for (const id of keys) {
+      const c = courseMap.get(id);
+      const d = (c?.date?.seconds ? new Date(c.date.seconds * 1000) : new Date(c?.date || Date.now())).toLocaleDateString("fr-FR");
+      const line = `${d} — ${c?.name || "Course"}`;
+      opts.push(`<option value="${id}" ${id===selectedId?'selected':''}>${escapeHtml(line)}</option>`);
     }
     return opts.join("");
   }
 
-  function openEditor(row) {
+  function openDetailCard(row) {
+    const author = pilotNameById(row.uid) || pilotNameById(row.pilotUid) || row.authorName || row.author || row._authorRole || "";
     const html = `
-      <div id="reclamEditor" class="card" style="padding:12px">
-        <button type="button" id="reclamBack" style="margin-bottom:8px">← Retour</button>
-        <h3 style="margin:0 0 8px 0">Réclamation #${row._id}</h3>
-        <div class="muted" style="margin-bottom:12px">${dateStr(row._created)}</div>
+      <div class="card" style="padding:12px">
+        <button type="button" id="reclamBack" class="muted" style="margin-bottom:12px">← Retour</button>
+
+        <div class="muted" style="margin-bottom:6px"><strong>Réclamation #${escapeHtml(row._id)}</strong> — ${escapeHtml(dateStr(row._created))}</div>
 
         <label style="display:block;margin-bottom:6px;font-weight:600">Message</label>
-        <div class="muted" style="background:#1113; padding:8px; border-radius:8px; margin-bottom:12px">${escapeHtml(row.message)}</div>
+        <div class="muted" style="background:#1113; padding:8px; border-radius:8px; margin-bottom:12px">
+          <div><strong>Course :</strong> ${escapeHtml(row.courseText || "—")}</div>
+          <div><strong>Pilote(s) :</strong> ${escapeHtml(row.pilotsText || "—")}</div>
+          <div><strong>Moment :</strong> ${escapeHtml(row.momentText || "—")}</div>
+          <div style="margin-top:6px">${escapeHtml(row.description || "—")}</div>
+        </div>
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div>
@@ -1855,7 +1889,7 @@ async function loadReclamations() {
           </div>
           <div>
             <label class="muted">Auteur</label>
-            <input type="text" id="reclamAuthor" disabled value="${escapeHtml(row._authorRole || "")}" />
+            <input type="text" id="reclamAuthor" disabled value="${escapeHtml(author)}" />
           </div>
         </div>
 
@@ -1872,7 +1906,7 @@ async function loadReclamations() {
     `;
     listEl.innerHTML = html;
 
-    // remplir select pilotes triés A→Z depuis le cache
+    // alimenter select pilotes (A→Z)
     const pilotSel = document.getElementById("reclamPilot");
     pilotSel.setAttribute("data-pilots","alpha");
     pilotSel.innerHTML = '<option value="">-- Pilote --</option>';
@@ -1902,7 +1936,6 @@ async function loadReclamations() {
       try {
         await updateDoc(doc(db, guessColl ? guessColl : "reclamations", row._id.replace(/^.*\//, "")), payload);
       } catch (e) {
-        // fallback: principale
         await updateDoc(doc(db, "reclamations", row._id), payload);
       }
       await fetchAll(); applyFilters();
@@ -1927,6 +1960,7 @@ async function loadReclamations() {
   await fetchAll();
   applyFilters();
 }
+
 
 /* ---------------- ESTACUP : listing & édition inscriptions ---------------- */
 async function loadEstacupSignups() {
