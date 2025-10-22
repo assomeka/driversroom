@@ -288,12 +288,32 @@ document.getElementById("submitIncident")?.addEventListener("click", async () =>
   const description = document.getElementById("incidentDescription")?.value.trim();
   const raceId = document.getElementById("incidentRaceSelect")?.value || null;
   if (!description || selectedPilots.length === 0) { alert("Description et au moins un pilote requis."); return; }
-  const payload = { date: new Date(), description, courseId: raceId || null, pilotes: selectedPilots.map(p => ({ uid: p.uid, before: p.before, after: p.after })) };
+
+  const adminName = (document.getElementById("adminName")?.textContent || "").trim();
+  // On stocke aussi le nom pour l’affichage, en plus de l’uid
+  const payload = {
+    date: new Date(),
+    description,
+    courseId: raceId || null,
+    pilotes: selectedPilots.map(p => ({ uid: p.uid, name: p.name, before: p.before, after: p.after })),
+    createdByUid: (auth.currentUser && auth.currentUser.uid) || null,
+    createdByName: adminName || null,
+  };
+
   await addDoc(collection(db, "incidents"), payload);
-  for (const p of selectedPilots) await updateDoc(doc(db, "users", p.uid), { licensePoints: p.after });
-  selectedPilots = []; updateIncidentList(); document.getElementById("incidentDescription").value = "";
-  alert("Incident enregistré."); await loadIncidentHistory();
+
+  // Appliquer les points "après" sur chaque pilote
+  for (const p of selectedPilots) {
+    await updateDoc(doc(db, "users", p.uid), { licensePoints: p.after });
+  }
+
+  selectedPilots = [];
+  updateIncidentList();
+  document.getElementById("incidentDescription").value = "";
+  alert("Incident enregistré.");
+  await loadIncidentHistory();
 });
+
 
 /* ---------------- Pilotes (liste pour Résultats/Incidents) ---------------- */
 async function loadPilots() {
@@ -1670,11 +1690,150 @@ function ensureCourseEditorShell() {
 }
 
 /* ---------------- Historique incidents / Réclamations ---------------- */
+/* ---------------- Historique incidents / Réclamations ---------------- */
 async function loadIncidentHistory() {
   const box = document.getElementById("incidentHistory");
   if (!box) return;
-  box.innerHTML = `<p class="muted">Historique chargé.</p>`;
+  box.innerHTML = "<p>Chargement…</p>";
+
+  // petit utilitaire
+  const escapeHtml = (s) => (s||"").toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const toDateVal = (v) => v?.seconds ? new Date(v.seconds*1000) : (v ? new Date(v) : null);
+  const nameByUid = (uid) => {
+    const p = (ImportState.usersCache || []).find(x => x.id === uid);
+    return p ? `${p.firstName} ${p.lastName}`.trim() : uid || "";
+  };
+
+  try {
+    // Map des courses: id -> libellé
+    const coursesSnap = await getDocs(collection(db, "courses"));
+    const courseById = new Map();
+    coursesSnap.forEach(c => {
+      const d = c.data() || {};
+      const when = d.date?.seconds ? new Date(d.date.seconds*1000) : (d.date ? new Date(d.date) : null);
+      const whenTxt = when ? when.toLocaleDateString("fr-FR") : "";
+      courseById.set(c.id, `${d.name || "Course"}${whenTxt ? ` (${whenTxt})` : ""}`);
+    });
+
+    // Récup incidents
+    const incSnap = await getDocs(collection(db, "incidents"));
+    const rows = [];
+    incSnap.forEach(docu => {
+      const x = docu.data() || {};
+      rows.push({
+        id: docu.id,
+        date: toDateVal(x.date || x.createdAt || x.time) || null,
+        courseId: x.courseId || x.raceId || null,
+        description: x.description || x.note || x.reason || "",
+        pilotes: Array.isArray(x.pilotes) ? x.pilotes.map(p => ({
+          uid: p.uid,
+          name: p.name || nameByUid(p.uid),
+          before: Number.isFinite(p.before) ? p.before : null,
+          after: Number.isFinite(p.after) ? p.after : null
+        })) : [],
+        createdByUid: x.createdByUid || null,
+        createdByName: x.createdByName || ""
+      });
+    });
+    rows.sort((a,b)=> (b.date?.getTime?.()||0) - (a.date?.getTime?.()||0));
+
+    const me = auth.currentUser?.uid || null;
+    const mine = rows.filter(r => r.createdByUid && me && r.createdByUid === me);
+
+    function renderEditable(i) {
+      const d = i.date ? i.date.toLocaleString("fr-FR") : "—";
+      const courseLabel = i.courseId ? (courseById.get(i.courseId) || i.courseId) : "—";
+      const who = i.createdByName ? ` — <span style="opacity:.7">par ${escapeHtml(i.createdByName)}</span>` : "";
+
+      // lignes pilotes éditables (on ne modifie que "after" côté UI)
+      const pilotsHtml = i.pilotes.map((p, idx) => {
+        const delta = (Number.isFinite(p.before) && Number.isFinite(p.after)) ? (p.after - p.before) : 0;
+        const deltaTxt = Number.isFinite(delta) ? ` (${delta>0?"+":""}${delta})` : "";
+        return `
+          <li style="margin:4px 0">
+            <strong>${escapeHtml(p.name || nameByUid(p.uid))}</strong>
+            — <span class="muted">avant:</span> ${p.before ?? "—"}
+            → <span class="muted">après:</span>
+            <input type="number" value="${p.after ?? ""}" data-idx="${idx}" data-id="${i.id}" style="width:90px;text-align:center" />
+            <span style="opacity:.7">${deltaTxt}</span>
+          </li>`;
+      }).join("");
+
+      return `
+        <div class="course-box" data-id="${i.id}">
+          <div class="muted" style="margin-bottom:6px"><strong>${d}</strong>${who}</div>
+          <label class="muted">Course</label>
+          <div style="margin-bottom:6px">
+            <select class="hist-course">
+              <option value="">—</option>
+              ${Array.from(courseById.entries()).map(([cid,label]) =>
+                `<option value="${cid}" ${cid===i.courseId?'selected':''}>${escapeHtml(label)}</option>`).join("")}
+            </select>
+          </div>
+          <label class="muted">Description</label>
+          <textarea class="hist-desc" rows="3" style="width:100%;margin-bottom:6px">${escapeHtml(i.description)}</textarea>
+          <div><strong>Pilotes impactés</strong></div>
+          <ul style="margin:6px 0 0 16px">${pilotsHtml}</ul>
+
+          <div style="display:flex;gap:8px;margin-top:10px">
+            <button type="button" class="hist-save">💾 Enregistrer</button>
+            <button type="button" class="hist-del danger">🗑️ Supprimer</button>
+          </div>
+        </div>`;
+    }
+
+    let html = `<h4>Vos incidents enregistrés</h4>`;
+    html += mine.length ? mine.map(renderEditable).join("") : `<p class="muted">Aucun incident saisi par vous pour l’instant.</p>`;
+    html += `<details style="margin-top:16px"><summary style="cursor:pointer">Afficher tous les incidents</summary>`;
+    html += rows.filter(r => !mine.includes(r)).map(renderEditable).join("") || `<p class="muted">Aucun autre incident.</p>`;
+    html += `</details>`;
+    box.innerHTML = html;
+
+    // Handlers EDIT / DELETE
+    box.querySelectorAll(".course-box").forEach(el => {
+      const id = el.dataset.id;
+      const descEl = el.querySelector(".hist-desc");
+      const courseEl = el.querySelector(".hist-course");
+
+      el.querySelector(".hist-save")?.addEventListener("click", async () => {
+        // collecter les valeurs modifiées
+        const inputs = [...el.querySelectorAll('input[type="number"][data-id="'+id+'"]')];
+        const pilotes = inputs.map(inp => {
+          const idx = +inp.dataset.idx;
+          const p0 = (rows.find(r => r.id === id)?.pilotes || [])[idx];
+          const after = parseInt(inp.value,10);
+          return { uid: p0.uid, name: p0.name, before: p0.before, after: Number.isFinite(after) ? after : p0.after };
+        });
+
+        // MAJ doc
+        await updateDoc(doc(db,"incidents",id), {
+          description: descEl.value.trim(),
+          courseId: courseEl.value || null,
+          pilotes
+        });
+
+        // Appliquer les points “après” aux users
+        for (const p of pilotes) {
+          if (Number.isFinite(p.after)) {
+            await updateDoc(doc(db,"users",p.uid), { licensePoints: p.after });
+          }
+        }
+        alert("Incident mis à jour.");
+        await loadIncidentHistory();
+      });
+
+      el.querySelector(".hist-del")?.addEventListener("click", async () => {
+        if (!confirm("Supprimer cet incident ?")) return;
+        await deleteDoc(doc(db,"incidents",id));
+        el.remove();
+      });
+    });
+  } catch (e) {
+    console.error(e);
+    box.innerHTML = "<p>Erreur lors du chargement de l’historique.</p>";
+  }
 }
+
 
 /* ======= RÉCLAMATIONS : inclut anciennes envoyées par admins + legacy ======= */
 /* ======= RÉCLAMATIONS : inclut anciennes envoyées par admins + legacy ======= */
