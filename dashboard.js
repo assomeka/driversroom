@@ -7,6 +7,8 @@
 // MAJ 2025-10-06-prioManualPoints : le dashboard affiche en priorité participants[].points (saisie admin)
 // MAJ 2025-10-15 : Sous-menu "Vote Circuit" + 2 questions (Round 3 & Round 5) + validation unique + drapeaux (flag-icons) + stockage Firestore estacup_votes
 // MAJ 2025-10-15-bis : Classement Équipes — ignore "(Sans équipe)" + loader animé pendant calcul (pilotes & équipes)
+// MAJ 2025-10-30-fix-steamid : formulaire inscription redemande SteamID, tolère URL/ID64, enregistre steamId & steamID64.
+// MAJ 2025-10-30-fix-display : suppression des backslashes dans les templates (plus de ${...} affichés en clair) + fix escapeHtml('>').
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
@@ -52,7 +54,7 @@ function formatDateFR(v) {
   return d ? d.toLocaleDateString("fr-FR") : "";
 }
 function escapeHtml(s) {
-  return (s || "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;"," >":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+  return (s || "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 }
 function msToClock(ms) {
   if (!isNum(ms)) return String(ms ?? "");
@@ -71,6 +73,12 @@ function firstDefined(...vals) {
 }
 /* Loader HTML */
 const loaderHtml = (txt="Chargement…") => `<div class="loading-inline"><div class="spinner"></div><div>${escapeHtml(txt)}</div></div>`;
+
+/* === SteamID helpers (tolérants) === */
+function extractSteam64(input) {
+  const m = String(input || "").match(/765\d{14}/);
+  return m ? m[0] : "";
+}
 
 /* ======================== État global / caches ======================== */
 let currentUid   = null;
@@ -184,6 +192,7 @@ onAuthStateChanged(auth, async (user) => {
   $("licensePoints").textContent = data.licensePoints ?? 10;
   $("licenseClass").textContent  = data.licenseClass || "Rookie";
   $("dob").textContent           = formatDateFR(firstDefined(data.dob, data.birthDate, data.birthday, data.dateNaissance, data.naissance)) || "Non renseignée";
+  $("steamIdLine").textContent   = data.steamID64 || data.steamId || "—";
 
   setupNavigation(data.admin === true);
 
@@ -607,7 +616,7 @@ async function loadMRating(uid) {
   for (const c of courses) {
     const parts = (c.participants || [])
       .filter(p => p && p.uid)
-      .map(p => ({ uid: p.uid, position: Number(p.position ?? 9999), name: p.name || "" }));
+      .map(p => ({ uid: p.uid, position: Number(p.position ?? (1/0)), name: p.name || "" }));
     if (parts.length < 2) continue;
 
     const ratingsMap = {};
@@ -897,6 +906,7 @@ async function loadEstacupForm(userData, editing = false) {
       <p><strong>Vous êtes déjà inscrit.</strong></p>
       <p>Statut : <span class="status ${existing.validated ? "ok" : "wait"}">${status}</span></p>
       <p>Voiture : <b>${escapeHtml(existing.carChoice || "-")}</b> • N° : <b>${existing.raceNumber ?? "-"}</b></p>
+      <p>Steam ID : <b>${escapeHtml(existing.steamID64 || existing.steamId || "-")}</b></p>
       <div class="toolbar" style="margin-top:8px">
         <button id="btnEditSignup">✏️ Modifier mon inscription</button>
       </div>
@@ -926,13 +936,13 @@ async function loadEstacupForm(userData, editing = false) {
 
   const form = document.createElement("form");
   form.innerHTML = `
-    <input type="text" id="first" value="\${escapeHtml(existing?.firstName || userData.firstName || "")}" placeholder="Prénom" required>
-    <input type="text" id="last" value="\${escapeHtml(existing?.lastName || userData.lastName || "")}" placeholder="Nom" required>
-    <input type="number" id="age" value="\${age ?? ""}" placeholder="Âge" required>
-    <input type="email" id="email" value="\${escapeHtml(existing?.email || userData.email || '')}" placeholder="Email" required>
+    <input type="text" id="first" value="${escapeHtml(existing?.firstName || userData.firstName || "")}" placeholder="Prénom" required>
+    <input type="text" id="last" value="${escapeHtml(existing?.lastName || userData.lastName || "")}" placeholder="Nom" required>
+    <input type="number" id="age" value="${age ?? ""}" placeholder="Âge" required>
+    <input type="email" id="email" value="${escapeHtml(existing?.email || userData.email || '')}" placeholder="Email" required>
 
-    <input type="text" id="team" value="\${escapeHtml(existing?.teamName || '')}" placeholder="Équipe (ou espace)">
-    <input type="number" id="raceNumber" min="1" max="999" value="\${existing?.raceNumber ?? ''}" placeholder="Numéro de course (1-999)" required>
+    <input type="text" id="team" value="${escapeHtml(existing?.teamName || '')}" placeholder="Équipe (ou espace)">
+    <input type="number" id="raceNumber" min="1" max="999" value="${existing?.raceNumber ?? ''}" placeholder="Numéro de course (1-999)" required>
     <div id="takenNumbers" class="taken-numbers"></div>
 
     <select id="car" required>
@@ -948,6 +958,9 @@ async function loadEstacupForm(userData, editing = false) {
       <option value="Livrée semi-perso" ${existing?.liveryChoice==="Livrée semi-perso"?"selected":""}>Livrée semi-perso</option>
       <option value="Livrée MEKA" ${existing?.liveryChoice==="Livrée MEKA"?"selected":""}>Livrée MEKA</option>
     </select>
+
+    <!-- Steam ID demandé ici -->
+    <input type="text" id="steam" value="${escapeHtml(existing?.steamID64 || existing?.steamId || userData.steamID64 || userData.steamId || '')}" placeholder="Steam ID64 (765…) ou URL de profil" required>
 
     <div id="colors" style="margin-top:8px;${existing?.liveryChoice==="Livrée semi-perso"?"":"display:none"}">
       <label>Couleur 1</label><input type="color" id="c1" value="${initColors.color1}">
@@ -996,6 +1009,14 @@ async function loadEstacupForm(userData, editing = false) {
       return;
     }
 
+    // Steam ID : accepte URL ou ID64 (765…)
+    const steamRaw = form.querySelector("#steam").value.trim();
+    const steam64  = extractSteam64(steamRaw);
+    if (!steam64) {
+      alert("Merci de renseigner votre Steam ID64 (17 chiffres commençant par 765) ou une URL de profil Steam valide contenant l’ID64.");
+      return;
+    }
+
     const payload = {
       uid: auth.currentUser.uid,
       firstName: form.querySelector("#first").value.trim(),
@@ -1006,7 +1027,10 @@ async function loadEstacupForm(userData, editing = false) {
       carChoice: form.querySelector("#car").value,
       liveryChoice: liverySelect.value,
       raceNumber,
-      validated: false
+      validated: false,
+      steamId: steam64,
+      steamID64: steam64,
+      steamInput: steamRaw
     };
 
     if (payload.liveryChoice === "Livrée semi-perso") {
@@ -1020,19 +1044,26 @@ async function loadEstacupForm(userData, editing = false) {
       payload.liveryColors = null;
     }
 
-    if (existing) {
-      const ref = doc(db, "estacup_signups", existingId);
-      await updateDoc(ref, { ...payload, validated: false, uid: auth.currentUser.uid });
-    } else {
-      await addDoc(collection(db, "estacup_signups"), { ...payload, validated: false, uid: auth.currentUser.uid });
+    try {
+      if (existing) {
+        const ref = doc(db, "estacup_signups", existingId);
+        await updateDoc(ref, { ...payload, validated: false, uid: auth.currentUser.uid });
+      } else {
+        await addDoc(collection(db, "estacup_signups"), { ...payload, validated: false, uid: auth.currentUser.uid });
+      }
+      // maj cache
+      signupCache.set(auth.currentUser.uid, { teamName: payload.teamName, raceNumber: payload.raceNumber, carChoice: payload.carChoice });
+
+      alert("Inscription ESTACUP enregistrée !");
+      loadEstacupEngages();
+      loadEstacupForm(userData, false);
+      // affiche aussi dans Infos
+      const steamLine = $("steamIdLine");
+      if (steamLine && steam64) steamLine.textContent = steam64;
+    } catch (err) {
+      console.error(err);
+      alert("Erreur lors de l’enregistrement. Réessayez.");
     }
-
-    // maj cache
-    signupCache.set(auth.currentUser.uid, { teamName: payload.teamName, raceNumber: payload.raceNumber, carChoice: payload.carChoice });
-
-    alert("Inscription ESTACUP enregistrée !");
-    loadEstacupEngages();
-    loadEstacupForm(userData, false);
   });
 }
 
@@ -1063,7 +1094,8 @@ async function loadEstacupEngages() {
         <div class="engage-text">
           <strong>${escapeHtml(`${d.firstName} ${d.lastName}`)}</strong><br>
           Numéro : ${d.raceNumber}<br>
-          Équipe : ${escapeHtml(d.teamName || "")} | Voiture : ${escapeHtml(d.carChoice || "")}
+          Équipe : ${escapeHtml(d.teamName || "")} | Voiture : ${escapeHtml(d.carChoice || "")}<br>
+          Steam ID : ${escapeHtml(d.steamID64 || d.steamId || "-")}
         </div>
         ${src ? `<img src="${src}" alt="${escapeHtml(d.carChoice || "")}" class="car-thumb">` : ""}
       </div>
@@ -1244,7 +1276,7 @@ async function loadEstacupTeamStandings() {
         const uid  = pickUid(p);
         if (!uid) continue;
 
-        // 🔴 Exclure les sans équipe dès la collecte
+        // Exclure les sans équipe dès la collecte
         const teamNameRaw = await resolveTeam(uid, c.id, p);
         const team = normTeamName(teamNameRaw);
         if (team === "(Sans équipe)") continue;
