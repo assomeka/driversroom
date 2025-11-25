@@ -1872,49 +1872,60 @@ async function loadReclamations() {
   const escapeHtml = (s) => (s||"").toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
   function normalizeRow(d, id, roleHint = "") {
-    const row = { ...(d || {}) };
-    row._id = id;
+  const row = { ...(d || {}) };
+  row._id = id;
 
-    // date
-    row._created =
-      toDateVal(row.date) || toDateVal(row.createdAt) || toDateVal(row.sentAt) ||
-      toDateVal(row.time) || toDateVal(row.timestamp) || null;
+  // date (création de la réclamation)
+  row._created =
+    toDateVal(row.date) || toDateVal(row.createdAt) || toDateVal(row.sentAt) ||
+    toDateVal(row.time) || toDateVal(row.timestamp) || null;
 
-    // qui a écrit ?
-    const flagAdmin = row.isAdmin === true || row.fromAdmin === true || row.admin === true ||
-                      row.senderRole === "admin" || row.createdBy === "admin" || roleHint === "admin";
-    const flagUser  = row.senderRole === "user" || row.createdBy === "user" || row.authorRole === "user";
-    row._authorRole = flagAdmin ? "admin" : (row.authorRole || (flagUser ? "user" : ""));
+  // qui a écrit ?
+  const flagAdmin = row.isAdmin === true || row.fromAdmin === true || row.admin === true ||
+                    row.senderRole === "admin" || row.createdBy === "admin" || roleHint === "admin";
+  const flagUser  = row.senderRole === "user" || row.createdBy === "user" || row.authorRole === "user";
+  row._authorRole = flagAdmin ? "admin" : (row.authorRole || (flagUser ? "user" : ""));
 
-    // statuts
-    row.status = row.status || row.state || row.etat || "open";
+  // statuts
+  row.status = row.status || row.state || row.etat || "open";
 
-    // identifiants utiles
-    row.uid      = row.uid || row.userId || row.authorUid || row.pilotUid || row.driverUid || null; // plaignant
-    row.pilotUid = row.pilotUid || row.uid || row.userId || row.driverUid || null;                  // cible éventuelle
-    row.courseId = row.courseId || row.raceId || row.eventId || null;
+  // identifiants utiles
+  row.uid      = row.uid || row.userId || row.authorUid || row.pilotUid || row.driverUid || null; // plaignant
+  row.pilotUid = row.pilotUid || row.uid || row.userId || row.driverUid || null;                  // cible éventuelle
+  row.courseId = row.courseId || row.raceId || row.eventId || null;
 
-    // notes admin
-    row.adminNotes = row.adminNotes || row.notes || row.comment || "";
+  // notes admin
+  row.adminNotes = row.adminNotes || row.notes || row.comment || "";
 
-    // champs saisis côté pilote
-    row.courseText  = row.courseText  || row.raceName || row.course || "";
-    row.pilotsText  = row.pilotsText  || row.pilots  || "";
-    row.momentText  = row.momentText  || row.moment  || "";
-    row.description = row.description || row.reason  || row.text || row.body || row.content || "";
+  // champs saisis côté pilote (legacy)
+  row.courseText  = row.courseText  || row.raceName || row.course || "";
+  row.pilotsText  = row.pilotsText  || row.pilots  || "";
+  row.momentText  = row.momentText  || row.moment  || "";
+  row.description = row.description || row.reason  || row.text || row.body || row.content || "";
 
-    // message synthèse (pour l’aperçu carte)
-    if (!row.message || !row.message.trim()) {
-      const parts = [];
-      if (row.courseText) parts.push(`Course: ${row.courseText}`);
-      if (row.pilotsText) parts.push(`Pilote(s): ${row.pilotsText}`);
-      if (row.momentText) parts.push(`Moment: ${row.momentText}`);
-      if (row.description) parts.push(row.description);
-      row.message = parts.join(" • ");
-    }
-
-    return row;
+  // nouveaux champs réclamation (V2)
+  const rawRaceDate = row.raceDate || row.courseDate || row.dateCourse || row.race_date;
+  row._raceDate = toDateVal(rawRaceDate);
+  if (row.split === undefined || row.split === null) {
+    row.split = row.splitNum ?? row.splitNumber ?? row.split_text ?? null;
   }
+  row.youtubeUrl = row.youtubeUrl || row.videoUrl || row.link || row.video || row.youtube || "";
+
+  // message synthèse (pour l’aperçu carte)
+  if (!row.message || !row.message.trim()) {
+    const parts = [];
+    if (row._raceDate) parts.push(`Date: ${dateOnlyStr(row._raceDate)}`);
+    if (row.split != null) parts.push(`Split ${row.split}`);
+    if (row.courseText) parts.push(`Course: ${row.courseText}`);
+    if (row.pilotsText) parts.push(`Pilote(s): ${row.pilotsText}`);
+    if (row.momentText) parts.push(`Moment: ${row.momentText}`);
+    if (row.description) parts.push(row.description);
+    if (row.youtubeUrl) parts.push(`YouTube: ${row.youtubeUrl}`);
+    row.message = parts.join(" • ");
+  }
+
+  return row;
+}
 
   async function fetchCollection(name, roleHint = "") {
     try {
@@ -1947,13 +1958,26 @@ async function loadReclamations() {
     return p ? `${p.firstName} ${p.lastName}`.trim() : "";
   }
 
-  function dateStr(d) {
-    if (!d) return "—";
-    const dd = new Date(d);
-    const y = dd.getFullYear(), m = String(dd.getMonth()+1).padStart(2,"0"), da = String(dd.getDate()).padStart(2,"0");
-    const hh = String(dd.getHours()).padStart(2,"0"), mi = String(dd.getMinutes()).padStart(2,"0");
-    return `${da}/${m}/${y} ${hh}h${mi}`;
-  }
+function dateStr(d) {
+  if (!d) return "—";
+  const dd = new Date(d);
+  const y  = dd.getFullYear();
+  const m  = String(dd.getMonth() + 1).padStart(2, "0");
+  const da = String(dd.getDate()).padStart(2, "0");
+  const hh = String(dd.getHours()).padStart(2, "0");
+  const mi = String(dd.getMinutes()).padStart(2, "0");
+  return `${da}/${m}/${y} ${hh}h${mi}`;
+}
+
+function dateOnlyStr(d) {
+  if (!d) return "—";
+  const dd = new Date(d);
+  const y  = dd.getFullYear();
+  const m  = String(dd.getMonth() + 1).padStart(2, "0");
+  const da = String(dd.getDate()).padStart(2, "0");
+  return `${da}/${m}/${y}`;
+}
+
 
   function applyFilters() {
     const q = normLower(searchEl.value);
@@ -1964,7 +1988,8 @@ async function loadReclamations() {
     if (q) rows = rows.filter(r => {
       const pile = [
         r.message, r.status, pilotNameById(r.uid), pilotNameById(r.pilotUid),
-        r.adminNotes, r.courseText, r.pilotsText, r.momentText, r.description
+        r.adminNotes, r.courseText, r.pilotsText, r.momentText, r.description,
+        r.youtubeUrl, r.split, dateOnlyStr(r._raceDate)
       ].join(" ");
       return normLower(pile).includes(q);
     });
@@ -2019,14 +2044,18 @@ async function loadReclamations() {
         <div class="muted" style="margin-bottom:6px"><strong>Réclamation #${escapeHtml(row._id)}</strong> — ${escapeHtml(dateStr(row._created))}</div>
 
         <label style="display:block;margin-bottom:6px;font-weight:600">Message</label>
-        <div class="muted" style="background:#1113; padding:8px; border-radius:8px; margin-bottom:12px">
-          <div><strong>Course :</strong> ${escapeHtml(row.courseText || "—")}</div>
-          <div><strong>Pilote(s) :</strong> ${escapeHtml(row.pilotsText || "—")}</div>
-          <div><strong>Moment :</strong> ${escapeHtml(row.momentText || "—")}</div>
-          <div style="margin-top:6px">${escapeHtml(row.description || "—")}</div>
-        </div>
+<div class="muted" style="background:#1113; padding:8px; border-radius:8px; margin-bottom:12px">
+  <div><strong>Date de la course :</strong> ${escapeHtml(dateOnlyStr(row._raceDate))}</div>
+  <div><strong>Split :</strong> ${row.split != null ? escapeHtml("Split " + row.split) : "—"}</div>
+  <div><strong>Description :</strong> ${escapeHtml(row.description || "—")}</div>
+  <div><strong>Vidéo :</strong> ${
+    row.youtubeUrl
+      ? `<a href="${escapeHtml(row.youtubeUrl)}" target="_blank" rel="noopener">Ouvrir la vidéo</a>`
+      : "—"
+  }</div>
+</div>
 
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
           <div>
             <label class="muted">Pilote concerné</label>
             <select id="reclamPilot" data-pilots="alpha"></select>

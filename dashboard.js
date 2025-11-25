@@ -1106,20 +1106,42 @@ async function loadEstacupEngages() {
 
 /* ======================== Réclamations ======================== */
 $("submitReclam")?.addEventListener("click", async () => {
-  const courseText = $("reclamCourse")?.value?.trim();
-  const pilotsText = $("reclamPilotsText")?.value?.trim();
-  const momentText = $("reclamMoment")?.value?.trim();
-  const desc       = $("reclamDesc")?.value?.trim();
-  if (!courseText || !desc) { alert("Merci de renseigner au moins la course et la description."); return; }
+  const raceDateStr = $("reclamDate")?.value?.trim();
+  const splitVal    = $("reclamSplit")?.value?.trim();
+  const desc        = $("reclamDesc")?.value?.trim();
+  const video       = $("reclamVideo")?.value?.trim();
+
+  if (!raceDateStr || !splitVal || !desc || !video) {
+    alert("Merci de remplir les 4 champs (date, split, description et lien YouTube).");
+    return;
+  }
+  if (!/(youtu\.be|youtube\.com)/i.test(video)) {
+    alert("Merci de renseigner un lien YouTube valide (youtube.com ou youtu.be).");
+    return;
+  }
+
+  const raceDate = new Date(raceDateStr);
+  if (!raceDate || isNaN(raceDate.getTime())) {
+    alert("Date de course invalide.");
+    return;
+  }
+
   try {
     await addDoc(collection(db, "reclamations"), {
-      courseText, pilotsText, momentText, description: desc,
-      uid: currentUid, date: new Date(), status: "pending"
+      raceDate,
+      split: Number(splitVal),
+      description: desc,
+      youtubeUrl: video,
+      uid: currentUid,
+      date: new Date(),      // date d'envoi de la réclamation
+      status: "pending"
     });
-    $("reclamCourse").value = "";
-    $("reclamPilotsText").value = "";
-    $("reclamMoment").value = "";
+
+    $("reclamDate").value = "";
+    $("reclamSplit").value = "";
     $("reclamDesc").value = "";
+    $("reclamVideo").value = "";
+
     await loadReclamHistory();
     alert("Réclamation envoyée !");
   } catch (e) {
@@ -1138,17 +1160,45 @@ async function loadReclamHistory() {
       const x = { id: d.id, ...d.data() };
       if (x.uid === currentUid) mine.push(x);
     });
-    if (mine.length === 0) { box.innerHTML = "<p class='muted-note'>Aucune réclamation envoyée.</p>"; return; }
+    if (mine.length === 0) {
+      box.innerHTML = "<p class='muted-note'>Aucune réclamation envoyée.</p>";
+      return;
+    }
     mine.sort((a,b)=> (toDate(b.date)??0) - (toDate(a.date)??0));
+
     let html = "";
     for (const r of mine) {
-      html += `<div class="course-box">
-        <p><strong>${(toDate(r.date)||new Date()).toLocaleString("fr-FR")}</strong> — <em>${r.status || "pending"}</em></p>
-        <p><strong>Course :</strong> ${escapeHtml(r.courseText || "-")}</p>
-        <p><strong>Pilote(s) :</strong> ${escapeHtml(r.pilotsText || "-")}</p>
-        <p><strong>Moment :</strong> ${escapeHtml(r.momentText || "-")}</p>
-        <p>${escapeHtml(r.description || "")}</p>
-      </div>`;
+      const createdAt = toDate(r.date) || new Date();
+      const raceDate  = toDate(r.raceDate);
+      const raceDateStr = raceDate ? raceDate.toLocaleDateString("fr-FR") : "-";
+      const splitLabel = r.split != null ? `Split ${r.split}` : (r.splitText || "-");
+      const youtube = r.youtubeUrl || r.videoUrl || r.link || r.video || r.youtube || "";
+      const hasNewFields = !!(raceDate || r.split != null || youtube);
+
+      if (hasNewFields) {
+        const safeDesc = escapeHtml(r.description || "");
+        const safeStatus = escapeHtml(r.status || "pending");
+        const safeRaceDate = escapeHtml(raceDateStr);
+        const safeSplit = escapeHtml(splitLabel || "-");
+        const safeUrl = escapeHtml(youtube);
+
+        html += `<div class="course-box">
+          <p><strong>${createdAt.toLocaleString("fr-FR")}</strong> — <em>${safeStatus}</em></p>
+          <p><strong>Date de la course :</strong> ${safeRaceDate}</p>
+          <p><strong>Split :</strong> ${safeSplit}</p>
+          <p><strong>Description :</strong> ${safeDesc}</p>
+          <p><strong>Vidéo :</strong> ${safeUrl ? `<a href="${safeUrl}" target="_blank" rel="noopener">Ouvrir la vidéo</a>` : "-"}</p>
+        </div>`;
+      } else {
+        // fallback legacy (ancienne structure)
+        html += `<div class="course-box">
+          <p><strong>${(toDate(r.date)||new Date()).toLocaleString("fr-FR")}</strong> — <em>${escapeHtml(r.status || "pending")}</em></p>
+          <p><strong>Course :</strong> ${escapeHtml(r.courseText || "-")}</p>
+          <p><strong>Pilote(s) :</strong> ${escapeHtml(r.pilotsText || "-")}</p>
+          <p><strong>Moment :</strong> ${escapeHtml(r.momentText || "-")}</p>
+          <p>${escapeHtml(r.description || "")}</p>
+        </div>`;
+      }
     }
     box.innerHTML = html;
   } catch (e) {

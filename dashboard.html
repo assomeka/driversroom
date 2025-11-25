@@ -157,32 +157,40 @@
         <div id="voteCircuitHost"></div>
       </div>
 
-      <!-- Réclamation -->
-      <div id="estacup-sub-reclam" class="estacup-subsection hidden">
-        <h4>Réclamation</h4>
+<!-- Réclamation -->
+<div id="estacup-sub-reclam" class="estacup-subsection hidden">
+  <h4>Réclamation</h4>
 
-        <label for="reclamCourse">Course concernée (saisie manuelle) :</label>
-        <input id="reclamCourse" type="text" placeholder="Ex. : Sprint Monza Split B • 12/10/2025" />
+  <p class="muted-note" style="margin-bottom:10px;">
+    Merci de remplir <strong>tous</strong> les champs ci-dessous. Le lien vers la vidéo <strong>YouTube</strong> est obligatoire.
+  </p>
 
-        <label for="reclamPilotsText">Pilote(s) concerné(s) (saisie manuelle) :</label>
-        <input id="reclamPilotsText" type="text" placeholder="Ex. : Dupont Paul (#27), Martin Lea (#14)" />
+  <label for="reclamDate">Date de la course :</label>
+  <input id="reclamDate" type="date" />
 
-        <label for="reclamMoment">Moment de l'incident (n° du tour, virage) :</label>
-        <input id="reclamMoment" type="text" placeholder="Ex. : Tour 8, Variante della Roggia (T4/T5)" />
+  <label for="reclamSplit">Split :</label>
+  <select id="reclamSplit">
+    <option value="">-- Choisir un split --</option>
+    <option value="1">Split 1</option>
+    <option value="2">Split 2</option>
+  </select>
 
-        <label for="reclamDesc">Description de l'incident :</label>
-        <textarea id="reclamDesc" placeholder="Décrivez précisément l'incident..." rows="5"></textarea>
+  <label for="reclamDesc">Description de l'incident :</label>
+  <textarea id="reclamDesc" placeholder="Décrivez précisément l'incident (tour, virage, pilotes impliqués, etc.)" rows="5"></textarea>
 
-        <button id="submitReclam">📨 Envoyer la réclamation</button>
+  <label for="reclamVideo">Lien de la vidéo YouTube (obligatoire) :</label>
+  <input id="reclamVideo" type="url" placeholder="https://youtu.be/..." />
 
-        <p class="livery-intro" style="margin-top:12px;">
-          ℹ️ <strong>Note :</strong> la décision des commissaires sera visible dans <strong>M-Safety</strong>.
-        </p>
+  <button id="submitReclam">📨 Envoyer la réclamation</button>
 
-        <div id="reclamHistory" style="margin-top:20px;"></div>
-      </div>
+  <p class="livery-intro" style="margin-top:12px;">
+    ℹ️ <strong>Note :</strong> la décision des commissaires sera visible dans <strong>M-Safety</strong>.
+  </p>
 
-      <!-- Classement Pilotes -->
+  <div id="reclamHistory" style="margin-top:20px;"></div>
+</div>
+
+<!-- Classement Pilotes -->
       <div id="estacup-sub-rankpilots" class="estacup-subsection hidden">
         <h4>Classement Pilotes</h4>
         <div id="estacupPilotStandings" class="course-box">
