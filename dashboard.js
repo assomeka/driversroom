@@ -265,14 +265,28 @@ function pickGapLeaderMsDirect(p) {
 /* === PÉNALITÉS : ajout lecture directe penaltyMs (flat) === */
 function pickPenaltyMs(p) {
   let total = 0;
+
+  // Ces champs-là sont déjà stockés en millisecondes
+  const directMs = pick(p, ["penaltyMs","penalty_ms","penaltyMS","stats.penaltyMs"]);
+  if (directMs != null && isFinite(Number(directMs))) {
+    total += Number(directMs);
+  }
+
+  // Pour les anciens formats / JSON bruts, on garde l’heuristique
   total += anyNumberMs(pick(p, ["basePenaltyMs","penalties.baseMs","stats.basePenaltyMs"])) || 0;
   total += anyNumberMs(pick(p, ["editPenaltyMs","penalties.editMs","stats.editPenaltyMs"])) || 0;
-  total += anyNumberMs(pick(p, ["penaltyMs","penalty_ms","penaltyMS","stats.penaltyMs"])) || 0;
   total += anyNumberMs(pick(p, ["penaltyTime","penaltiesTime","addedTime","added_time","timePenalty"])) || 0;
+
   const pens = pick(p, ["penalties","stats.penalties"]);
-  if (Array.isArray(pens)) for (const pen of pens) total += anyNumberMs(pen?.time, pen?.duration, pen?.addedTime, pen?.ms) || 0;
+  if (Array.isArray(pens)) {
+    for (const pen of pens) {
+      total += anyNumberMs(pen?.time, pen?.duration, pen?.addedTime, pen?.ms) || 0;
+    }
+  }
+
   return total || null;
 }
+
 
 /* === Chemins étendus pour POINTS posés par l'admin === */
 function pickPointsLocal(p) {
