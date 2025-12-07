@@ -8,7 +8,13 @@
 // MAJ 2025-10-15 : Sous-menu "Vote Circuit" + 2 questions (Round 3 & Round 5) + validation unique + drapeaux (flag-icons) + stockage Firestore estacup_votes
 // MAJ 2025-10-15-bis : Classement Équipes — ignore "(Sans équipe)" + loader animé pendant calcul (pilotes & équipes)
 // MAJ 2025-10-30-fix-steamid : formulaire inscription redemande SteamID, tolère URL/ID64, enregistre steamId & steamID64.
-// MAJ 2025-10-30-fix-display : suppression des backslashes dans les templates (plus de ${...} affichés en clair) + fix escapeHtml('>').
+// MAJ 2025-10-30-fix-display : suppression des backslashes dans les templates + fix escapeHtml('>').
+// MAJ 2025-12-03-joker : option "course joker" pour classements pilotes & équipes (retrait du pire week-end sprint+main du même round)
+// MAJ 2025-12-05-joker-detail : détail pilote = "round X, Split Y Sprint PX, Principale PX"
+// MAJ 2025-12-07-hoverCard : tooltip pilote après 0,5 s (nom, âge, M-Rating, M-Safety)
+// MAJ 2025-12-07-podiumColors : lignes podium colorées (résultats + classements)
+// MAJ 2025-12-07-gainFromGrid : colonne "Gain" = position grille - position finale
+// MAJ 2025-12-07-bestlapGlobal : meilleur tour global en violet
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
@@ -42,20 +48,32 @@ const db   = getFirestore(app);
 const $ = (id) => document.getElementById(id);
 const isNum = (x) => typeof x === "number" && isFinite(x);
 const clamp = (x,min,max)=>Math.max(min,Math.min(max,x));
+
 function toDate(value) {
   if (!value) return null;
-  if (value?.seconds && typeof value.seconds === "number") return new Date(value.seconds * 1000);
-  if (typeof value?.toDate === "function") { try { return value.toDate(); } catch {} }
+  if (value && typeof value.seconds === "number") return new Date(value.seconds * 1000);
+  if (value && typeof value.toDate === "function") {
+    try { return value.toDate(); } catch {}
+  }
   const d = new Date(value);
   return isNaN(d) ? null : d;
 }
+
 function formatDateFR(v) {
   const d = toDate(v);
   return d ? d.toLocaleDateString("fr-FR") : "";
 }
+
 function escapeHtml(s) {
-  return (s || "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+  return (s || "").replace(/[&<>"']/g, c => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  }[c]));
 }
+
 function msToClock(ms) {
   if (!isNum(ms)) return String(ms ?? "");
   const sign = ms < 0 ? "-" : "";
@@ -67,29 +85,190 @@ function msToClock(ms) {
   if (h > 0) return `${sign}${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}.${ms3}`;
   return `${sign}${m}:${String(s).padStart(2,"0")}.${ms3}`;
 }
+
 function firstDefined(...vals) {
   for (const v of vals) if (v !== undefined && v !== null && v !== "") return v;
   return undefined;
 }
-/* Loader HTML */
-const loaderHtml = (txt="Chargement…") => `<div class="loading-inline"><div class="spinner"></div><div>${escapeHtml(txt)}</div></div>`;
 
-/* === SteamID helpers (tolérants) === */
+/* Loader HTML */
+function loaderHtml(txt) {
+  const text = txt === undefined ? "Chargement…" : txt;
+  return (
+    '<div class="loading-inline">' +
+      '<div class="spinner"></div>' +
+      '<div>' + escapeHtml(text) + '</div>' +
+    '</div>'
+  );
+}
+
+/* === SteamID helpers === */
 function extractSteam64(input) {
   const m = String(input || "").match(/765\d{14}/);
   return m ? m[0] : "";
+}
+
+/* ========= Helpers génériques pour le nom / chemins ========= */
+function getByPath(obj, path) {
+  if (!obj || !path) return undefined;
+  const parts = path.split(".");
+  let cur = obj;
+  for (const k of parts) {
+    if (cur && Object.prototype.hasOwnProperty.call(cur, k)) {
+      cur = cur[k];
+    } else {
+      return undefined;
+    }
+  }
+  return cur;
+}
+
+function pick(obj, paths) {
+  for (const p of paths) {
+    const val = getByPath(obj, p);
+    if (val !== undefined && val !== null && val !== "") return val;
+  }
+  return undefined;
+}
+
+/* ======================== Tooltip pilote (hover 0,5 s) ======================== */
+let pilotHoverTimeout = null;
+let pilotTooltipEl = null;
+let pilotTooltipAnchor = null;
+let pilotTooltipCurrentUid = null;
+const pilotInfoCache = new Map();
+
+function computeAgeFromDob(dobField) {
+  const d = toDate(dobField);
+  if (!d) return null;
+  const now = new Date();
+  let age = now.getFullYear() - d.getFullYear();
+  const m = now.getMonth() - d.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+  return age;
+}
+
+function ensurePilotTooltip() {
+  if (pilotTooltipEl) return;
+  pilotTooltipEl = document.createElement("div");
+  pilotTooltipEl.id = "pilotTooltip";
+  pilotTooltipEl.style.position = "fixed";
+  pilotTooltipEl.style.zIndex = "9999";
+  pilotTooltipEl.style.padding = "8px 10px";
+  pilotTooltipEl.style.borderRadius = "8px";
+  pilotTooltipEl.style.background = "#0b1220";
+  pilotTooltipEl.style.border = "1px solid #38bdf8";
+  pilotTooltipEl.style.color = "#e2e8f0";
+  pilotTooltipEl.style.fontSize = "0.85rem";
+  pilotTooltipEl.style.boxShadow = "0 10px 30px rgba(15,23,42,0.9)";
+  pilotTooltipEl.style.display = "none";
+  pilotTooltipEl.style.maxWidth = "260px";
+  pilotTooltipEl.style.pointerEvents = "none";
+  document.body.appendChild(pilotTooltipEl);
+}
+
+function hidePilotTooltip() {
+  if (pilotTooltipEl) {
+    pilotTooltipEl.style.display = "none";
+  }
+  pilotTooltipAnchor = null;
+  pilotTooltipCurrentUid = null;
+}
+
+function positionPilotTooltip(anchorEl) {
+  if (!pilotTooltipEl || !anchorEl) return;
+  const rect = anchorEl.getBoundingClientRect();
+  const tooltipWidth = pilotTooltipEl.offsetWidth || 220;
+  const left = clamp(rect.left + rect.width / 2 - tooltipWidth / 2, 8, window.innerWidth - tooltipWidth - 8);
+  const top = rect.bottom + 8;
+  pilotTooltipEl.style.left = left + "px";
+  pilotTooltipEl.style.top = top + "px";
+}
+
+async function showPilotTooltipFor(uid, fallbackName, anchorEl) {
+  ensurePilotTooltip();
+  pilotTooltipAnchor = anchorEl;
+  pilotTooltipCurrentUid = uid;
+
+  const safeName = (fallbackName || "Pilote").toString();
+  pilotTooltipEl.innerHTML = `<strong>${escapeHtml(safeName)}</strong><br><span class="muted-note">Chargement…</span>`;
+  pilotTooltipEl.style.display = "block";
+  positionPilotTooltip(anchorEl);
+
+  let info = pilotInfoCache.get(uid);
+  if (!info) {
+    try {
+      const snap = await getDoc(doc(db, "users", uid));
+      if (snap.exists()) {
+        const d = snap.data() || {};
+        const dobRaw = firstDefined(d.dob, d.birthDate, d.birthday, d.dateNaissance, d.naissance);
+        const age = computeAgeFromDob(dobRaw);
+        const name = `${d.firstName ?? ""} ${d.lastName ?? ""}`.trim() || safeName;
+        const mRating = d.eloRating ?? 1000;
+        const mSafety = d.licensePoints ?? 10;
+        info = { name, age, mRating, mSafety };
+      } else {
+        info = { name: safeName, age: null, mRating: null, mSafety: null };
+      }
+      pilotInfoCache.set(uid, info);
+    } catch (e) {
+      console.warn("Erreur tooltip pilote:", e);
+      info = pilotInfoCache.get(uid) || { name: safeName, age: null, mRating: null, mSafety: null };
+    }
+  }
+
+  if (pilotTooltipCurrentUid !== uid || pilotTooltipAnchor !== anchorEl) return;
+
+  const ageTxt = info.age != null ? `${info.age} ans` : "—";
+  const mrTxt = info.mRating != null ? info.mRating : "—";
+  const msTxt = info.mSafety != null ? info.mSafety : "—";
+
+  pilotTooltipEl.innerHTML = `
+    <strong>${escapeHtml(info.name || safeName)}</strong><br>
+    <span class="muted-note">Âge : ${escapeHtml(String(ageTxt))}</span><br>
+    <span class="muted-note">M-Rating : ${escapeHtml(String(mrTxt))}</span><br>
+    <span class="muted-note">M-Safety : ${escapeHtml(String(msTxt))}</span>
+  `;
+  pilotTooltipEl.style.display = "block";
+  positionPilotTooltip(anchorEl);
+}
+
+function attachPilotHover(el, uid, fallbackName) {
+  if (!el || !uid) return;
+  el.addEventListener("mouseenter", () => {
+    clearTimeout(pilotHoverTimeout);
+    pilotHoverTimeout = setTimeout(() => {
+      showPilotTooltipFor(uid, fallbackName, el);
+    }, 500);
+  });
+  el.addEventListener("mouseleave", () => {
+    clearTimeout(pilotHoverTimeout);
+    hidePilotTooltip();
+  });
+}
+
+function setupPilotNameHover(root) {
+  if (!root) return;
+  const nodes = root.querySelectorAll(".pilot-name-cell[data-uid]");
+  nodes.forEach(node => {
+    const uid = node.getAttribute("data-uid");
+    const name = node.getAttribute("data-name") || node.textContent || "";
+    if (uid) {
+      attachPilotHover(node, uid, name.trim());
+    }
+  });
 }
 
 /* ======================== État global / caches ======================== */
 let currentUid   = null;
 let lastUserData = null;
 
-/** Cache inscriptions : uid -> {teamName, raceNumber, carChoice} */
+/** Cache inscriptions : uid -> {teamName, raceNumber, carChoice, steamID64, steamId} */
 const signupCache = new Map();
 /** Cache raceHistory : `${uid}::${raceId}` -> {points, team} */
 const raceHistoryCache = new Map();
 
-/* === Préchargement inscription ESTACUP (utile pour les équipes manquantes) === */
+/* === Préchargement inscription ESTACUP === */
 async function ensureSignupCache() {
   if (signupCache.size > 0) return;
   try {
@@ -100,7 +279,9 @@ async function ensureSignupCache() {
       signupCache.set(x.uid, {
         teamName: (x.teamName || "").toString(),
         raceNumber: x.raceNumber,
-        carChoice: x.carChoice
+        carChoice: x.carChoice,
+        steamID64: x.steamID64 || x.steamId || "",
+        steamId: x.steamId || x.steamID64 || ""
       });
     });
   } catch (e) {
@@ -108,7 +289,7 @@ async function ensureSignupCache() {
   }
 }
 
-/* === Accès raceHistory ciblé (pour récupérer points/équipe saisis côté pilote) === */
+/* === Accès raceHistory ciblé === */
 async function getRaceHistoryEntry(uid, raceId) {
   const key = `${uid}::${raceId}`;
   if (raceHistoryCache.has(key)) return raceHistoryCache.get(key);
@@ -135,6 +316,7 @@ async function getRaceHistoryEntry(uid, raceId) {
   raceHistoryCache.set(key, out);
   return out;
 }
+
 function toFiniteNumber(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
@@ -201,34 +383,58 @@ onAuthStateChanged(auth, async (user) => {
   await loadPilotStats(currentUid);
 });
 
-/* ======================== Lecture champs (robuste) ======================== */
-function pick(obj, paths) {
-  for (const p of paths) {
-    const val = getByPath(obj, p);
-    if (val !== undefined && val !== null && val !== "") return val;
+/* === parse des temps en ms (nombre ou string "mm:ss.xxx") === */
+function parseTimeLikeToMs(val) {
+  if (val === undefined || val === null || val === "") return null;
+
+  if (typeof val === "number") {
+    if (!isFinite(val)) return null;
+    return val > 5000 ? val : val * 1000;
   }
-  return undefined;
-}
-function getByPath(obj, path) {
-  if (!obj || !path) return undefined;
-  const parts = path.split(".");
-  let cur = obj;
-  for (const k of parts) {
-    if (cur && Object.prototype.hasOwnProperty.call(cur, k)) {
-      cur = cur[k];
-    } else {
-      return undefined;
+
+  if (typeof val === "string") {
+    const s = val.trim();
+    if (!s) return null;
+
+    const num = Number(s.replace(",", "."));
+    if (isFinite(num)) {
+      return num > 5000 ? num : num * 1000;
+    }
+
+    if (s.includes(":")) {
+      const parts = s.split(":");
+      if (parts.length === 2 || parts.length === 3) {
+        const secStr = parts.pop();
+        const sec = Number(secStr.replace(",", "."));
+        if (!isFinite(sec)) return null;
+
+        let total = sec;
+        if (parts.length === 2) {
+          const h = Number(parts[0]);
+          const m = Number(parts[1]);
+          if (!isFinite(h) || !isFinite(m)) return null;
+          total += h * 3600 + m * 60;
+        } else if (parts.length === 1) {
+          const m = Number(parts[0]);
+          if (!isFinite(m)) return null;
+          total += m * 60;
+        }
+        return total * 1000;
+      }
     }
   }
-  return cur;
+
+  return null;
 }
+
 function anyNumberMs(...vals) {
   for (const v of vals) {
-    const n = Number(v);
-    if (isFinite(n)) return n > 5000 ? n : n * 1000;
+    const ms = parseTimeLikeToMs(v);
+    if (ms != null && isFinite(ms)) return ms;
   }
   return null;
 }
+
 function splitNameParts(p) {
   const first = (pick(p, ["firstName","prenom","givenName","driver.firstName","pilot.firstName"]) ?? "").toString().trim();
   const last  = (pick(p, ["lastName","nom","familyName","driver.lastName","pilot.lastName"])   ?? "").toString().trim();
@@ -239,9 +445,11 @@ function splitNameParts(p) {
   if (parts.length === 1) return { first: "", last: parts[0] };
   return { first: parts.slice(0, -1).join(" "), last: parts.slice(-1)[0] };
 }
+
 function pickCar(p) {
   return String(pick(p, ["car","carModel","voiture","vehicle","model","carChoice","car.label","car.name"]) ?? "");
 }
+
 function pickBestLapMs(p) {
   const direct = pick(p, [
     "bestLapMs","bestLap","bestLapTime","lapBest","best","best_time",
@@ -249,6 +457,7 @@ function pickBestLapMs(p) {
   ]);
   return anyNumberMs(direct);
 }
+
 function pickTotalTimeMs(p) {
   const direct = pick(p, [
     "adjTotalMs","totalMs","total_time_ms",
@@ -257,22 +466,21 @@ function pickTotalTimeMs(p) {
   ]);
   return anyNumberMs(direct);
 }
+
 function pickGapLeaderMsDirect(p) {
   const direct = pick(p, ["gapToLeader","gap_leader","gapLeader","gap","stats.gapLeader"]);
   return anyNumberMs(direct);
 }
 
-/* === PÉNALITÉS : ajout lecture directe penaltyMs (flat) === */
+/* === PÉNALITÉS === */
 function pickPenaltyMs(p) {
   let total = 0;
 
-  // Ces champs-là sont déjà stockés en millisecondes
   const directMs = pick(p, ["penaltyMs","penalty_ms","penaltyMS","stats.penaltyMs"]);
   if (directMs != null && isFinite(Number(directMs))) {
     total += Number(directMs);
   }
 
-  // Pour les anciens formats / JSON bruts, on garde l’heuristique
   total += anyNumberMs(pick(p, ["basePenaltyMs","penalties.baseMs","stats.basePenaltyMs"])) || 0;
   total += anyNumberMs(pick(p, ["editPenaltyMs","penalties.editMs","stats.editPenaltyMs"])) || 0;
   total += anyNumberMs(pick(p, ["penaltyTime","penaltiesTime","addedTime","added_time","timePenalty"])) || 0;
@@ -287,8 +495,17 @@ function pickPenaltyMs(p) {
   return total || null;
 }
 
+/* === POSITION DE GRILLE === */
+function pickGridPosition(p) {
+  const v = firstDefined(
+    pick(p, ["gridPos","gridPosition","startPos","startingPosition","startPosition","grid"]),
+    pick(p, ["qualiPos","qualyPos","qualifyingPos","qualification.position"])
+  );
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
 
-/* === Chemins étendus pour POINTS posés par l'admin === */
+/* === POINTS / ÉQUIPE === */
 function pickPointsLocal(p) {
   const v = firstDefined(
     pick(p, ["points","score","pts","stats.points"]),
@@ -299,7 +516,7 @@ function pickPointsLocal(p) {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
-/* === Chemins étendus pour ÉQUIPE posée par l'admin === */
+
 function pickTeamLocal(p) {
   const t = firstDefined(
     pick(p, ["team","teamName","equipe","stats.team","driver.team","pilot.team"]),
@@ -312,7 +529,7 @@ function pickUid(p) {
   return (p.uid || p.id || p.steamId || p.driverId || p.pilotId || p.accountId || p.name || "").toString();
 }
 
-/* === Résolveurs unifiés (participant -> points/équipe), avec fallback raceHistory + signup === */
+/* === Pts & équipe avec fallback raceHistory + signup === */
 async function resolvePoints(uid, courseId, participant) {
   if (participant && typeof participant.points === "number" && isFinite(participant.points)) {
     return participant.points;
@@ -325,6 +542,7 @@ async function resolvePoints(uid, courseId, participant) {
 
   return 0;
 }
+
 async function resolveTeam(uid, courseId, participant) {
   const local = (pickTeamLocal(participant) || "").trim();
   if (local) return local;
@@ -335,7 +553,7 @@ async function resolveTeam(uid, courseId, participant) {
   return "(Sans équipe)";
 }
 
-/* -------- Gap leader intelligible (temps ou tours) -------- */
+/* -------- Gap leader intelligible -------- */
 function computeGapLeaderText(p, leader) {
   const direct = pickGapLeaderMsDirect(p);
   if (direct != null) return direct === 0 ? "Leader" : "+" + msToClock(direct);
@@ -410,9 +628,6 @@ async function loadResults(uid) {
   }
 }
 
-/**
- * Table EXACTE : Nom | Prénom | Voiture | Best lap | Gap leader | Pena | Points
- */
 async function renderRaceClassification(raceId, container, raceMeta) {
   try {
     const courseDoc = await getDoc(doc(db, "courses", raceId));
@@ -432,15 +647,24 @@ async function renderRaceClassification(raceId, container, raceMeta) {
 
     // Tri par position
     participants.sort((a, b) => {
-      const pa = Number(pick(a, ["position","stats.position"])) || 999999;
-      const pb = Number(pick(b, ["position","stats.position"])) || 999999;
+      const pa = Number(pick(a, ["position", "stats.position"])) || 999999;
+      const pb = Number(pick(b, ["position", "stats.position"])) || 999999;
       return pa - pb;
     });
-    const leader = participants.find(p => Number(pick(p,["position","stats.position"])) === 1) || participants[0];
+    const leader = participants.find(p => Number(pick(p, ["position", "stats.position"])) === 1) || participants[0];
 
-    const title = escapeHtml(c.name || raceMeta?.name || "Course");
-    const dateTxt = formatDateFR(c.date) || formatDateFR(raceMeta?.date) || "";
-    const trackTxt = escapeHtml((c.track || c.circuit || raceMeta?.track || "").replace(/\s*\(.*?\)\s*/g,"")); // supprime éventuels (GT3 nuit/...)
+    // 🔍 calcul du meilleur tour global
+    let globalBestMs = null;
+    for (const p of participants) {
+      const bm = pickBestLapMs(p);
+      if (bm != null && (globalBestMs == null || bm < globalBestMs)) {
+        globalBestMs = bm;
+      }
+    }
+
+    const title = escapeHtml(c.name || (raceMeta && raceMeta.name) || "Course");
+    const dateTxt = formatDateFR(c.date) || (raceMeta ? formatDateFR(raceMeta.date) : "") || "";
+    const trackTxt = escapeHtml(((c.track || c.circuit || (raceMeta && raceMeta.track) || "") + "").replace(/\s*\(.*?\)\s*/g, ""));
     const headerMeta = [
       dateTxt && `📅 ${dateTxt}`,
       trackTxt && `🏁 ${trackTxt}`,
@@ -449,7 +673,9 @@ async function renderRaceClassification(raceId, container, raceMeta) {
     ].filter(Boolean).join(" • ");
 
     let html = `<strong>Classement — ${title}</strong>`;
-    if (headerMeta) html += `<div class="muted-note" style="margin:6px 0 10px 0">${headerMeta}</div>`;
+    if (headerMeta) {
+      html += `<div class="muted-note" style="margin:6px 0 10px 0">${headerMeta}</div>`;
+    }
 
     html += `<div style="overflow:auto"><table class="race-table fixed-cols"><thead><tr>
       <th>Nom</th>
@@ -457,11 +683,13 @@ async function renderRaceClassification(raceId, container, raceMeta) {
       <th>Voiture</th>
       <th>Best lap</th>
       <th>Gap leader</th>
+      <th>Gain</th>
       <th>Pena</th>
       <th>Points</th>
     </tr></thead><tbody>`;
 
-    for (const p of participants) {
+    for (let index = 0; index < participants.length; index++) {
+      const p = participants[index];
       const { first, last } = splitNameParts(p);
       const uid = pickUid(p);
       const car       = pickCar(p);
@@ -469,13 +697,34 @@ async function renderRaceClassification(raceId, container, raceMeta) {
       const gapText   = computeGapLeaderText(p, leader);
       const penMs     = pickPenaltyMs(p);
       const points    = await resolvePoints(uid, raceId, p);
+      const fullName  = `${first} ${last}`.trim() || uid;
 
-      html += `<tr>
-        <td>${escapeHtml((last||"").toString().toUpperCase())}</td>
+      const posRaw = Number(pick(p, ["position","stats.position"]));
+      const pos = Number.isFinite(posRaw) ? posRaw : (index + 1);
+      const rowClass =
+        pos === 1 ? "podium-1" :
+        pos === 2 ? "podium-2" :
+        pos === 3 ? "podium-3" : "";
+
+      const gridPos = pickGridPosition(p);
+      let gainTxt = "—";
+      if (Number.isFinite(gridPos) && Number.isFinite(pos)) {
+        const delta = gridPos - pos; // positif = places gagnées
+        if (delta > 0) gainTxt = `+${delta}`;
+        else if (delta < 0) gainTxt = `${delta}`;
+        else gainTxt = "0";
+      }
+
+      const isGlobalBest = (globalBestMs != null && bestMs != null && bestMs === globalBestMs);
+      const bestCellClass = isGlobalBest ? "bestlap-global" : "";
+
+      html += `<tr class="${rowClass}">
+        <td class="pilot-name-cell" data-uid="${escapeHtml(uid)}" data-name="${escapeHtml(fullName)}">${escapeHtml((last || "").toString().toUpperCase())}</td>
         <td>${escapeHtml(first)}</td>
         <td>${escapeHtml(car)}</td>
-        <td>${bestMs != null ? msToClock(bestMs) : "—"}</td>
+        <td class="${bestCellClass}">${bestMs != null ? msToClock(bestMs) : "—"}</td>
         <td>${escapeHtml(gapText)}</td>
+        <td>${gainTxt}</td>
         <td>${penMs  != null ? msToClock(penMs) : "—"}</td>
         <td>${Number.isFinite(points) ? points : 0}</td>
       </tr>`;
@@ -483,6 +732,7 @@ async function renderRaceClassification(raceId, container, raceMeta) {
     html += `</tbody></table></div>`;
 
     container.innerHTML = html;
+    setupPilotNameHover(container);
   } catch (e) {
     console.error(e);
     container.innerHTML = "<em>Erreur lors du chargement du classement.</em>";
@@ -732,13 +982,14 @@ async function loadMSafety(uid) {
   }
 }
 
-/* ======================== ESTACUP : sous-menu & classements ======================== */
+/* ======================== ESTACUP : sous-menu & helpers rounds ======================== */
 function setupEstacupSubnav() {
   const subnav = $("estacupSubnav");
   if (!subnav) return;
   const subs = document.querySelectorAll("#estacupSubnav .estc-sub-btn");
   subs.forEach(btn => { btn.onclick = () => showEstacupSub(btn.dataset.sub); });
 }
+
 function showEstacupSub(key) {
   const blocks = {
     inscription: $("estacup-sub-inscription"),
@@ -750,9 +1001,85 @@ function showEstacupSub(key) {
   };
   Object.values(blocks).forEach(b => b && b.classList.add("hidden"));
   if (blocks[key]) blocks[key].classList.remove("hidden");
-  if (key === "votecircuit") renderVoteCircuit();
-  if (key === "rankpilots")  loadEstacupPilotStandings();
-  if (key === "rankteams")   loadEstacupTeamStandings();
+
+  if (key === "votecircuit") {
+    renderVoteCircuit();
+  } else if (key === "rankpilots") {
+    const chkP = $("jokerTogglePilots");
+    if (chkP) chkP.onchange = () => loadEstacupPilotStandings();
+    loadEstacupPilotStandings();
+  } else if (key === "rankteams") {
+    const chkT = $("jokerToggleTeams");
+    if (chkT) chkT.onchange = () => loadEstacupTeamStandings();
+    loadEstacupTeamStandings();
+  }
+}
+
+/* Helpers pour grouper les courses par ROUND (week-end sprint+main) */
+function getCourseRoundKey(c) {
+  const rRaw = firstDefined(
+    c.round,
+    c.roundNumber,
+    c.roundId,
+    c.r,
+    c.weekend,
+    c.eventRound
+  );
+  if (rRaw !== undefined && rRaw !== null && String(rRaw).trim() !== "") {
+    return String(rRaw).trim();
+  }
+
+  const d = toDate(c.date);
+  const day = d ? d.toISOString().slice(0, 10) : "no-date";
+  let base = (c.champRoundName || c.roundName || c.eventName || c.name || c.track || c.circuit || "round")
+    .toString()
+    .replace(/\b(sprint|main|principale)\b/gi, "")
+    .trim();
+  if (!base) base = "round";
+  return `${base} @ ${day}`;
+}
+
+/* libellé standardisé "round X" (ou fallback circuit/date) */
+function getCourseRoundLabel(c) {
+  const rRaw = firstDefined(
+    c.round,
+    c.roundNumber,
+    c.roundId,
+    c.r,
+    c.weekend,
+    c.eventRound
+  );
+  if (rRaw !== undefined && rRaw !== null && String(rRaw).trim() !== "") {
+    return `round ${String(rRaw).trim()}`;
+  }
+
+  const baseName = (c.champRoundName || c.roundName || c.eventName || c.name || "").toString();
+  const roundMatch = baseName.match(/round\s*(\d+)/i);
+  if (roundMatch) {
+    return `round ${roundMatch[1]}`;
+  }
+
+  const dStr  = formatDateFR(c.date) || "";
+  const track = (c.track || c.circuit || "round ?").toString();
+  return dStr ? `${track} (${dStr})` : track;
+}
+
+/* Détection Sprint / Principale pour le détail */
+function getRaceKind(c) {
+  const base = (firstDefined(
+    c.raceType,
+    c.type,
+    c.format,
+    c.sessionType,
+    c.sessionName,
+    c.name,
+    c.eventName,
+    c.champRoundName
+  ) || "").toString().toLowerCase();
+
+  if (base.match(/sprint/)) return "sprint";
+  if (base.match(/main|principale|principal|feature/)) return "main";
+  return "other";
 }
 
 /* ===== VOTE CIRCUIT (2 questions, drapeaux, validation unique) ===== */
@@ -762,7 +1089,6 @@ async function renderVoteCircuit() {
 
   host.innerHTML = `<div class="course-box"><p class="loading">Chargement du vote…</p></div>`;
 
-  // Définitions : noms simples + codes pays (flag-icons)
   const questions = [
     {
       key: "round3",
@@ -782,7 +1108,6 @@ async function renderVoteCircuit() {
     }
   ];
 
-  // Lire vote existant
   const voteRef = doc(db, "estacup_votes", currentUid);
   const snap = await getDoc(voteRef);
   const existing = snap.exists() ? snap.data() : null;
@@ -793,7 +1118,6 @@ async function renderVoteCircuit() {
     round5: existing?.round5 ?? null
   };
 
-  // Rendu
   const makeCard = (q) => {
     const selectedValue = selected[q.key];
     const opts = q.options.map(o => {
@@ -836,7 +1160,6 @@ async function renderVoteCircuit() {
   `;
 
   if (!locked) {
-    // écouteurs radio
     questions.forEach(q => {
       const radios = host.querySelectorAll(`input[name="${q.key}"]`);
       radios.forEach(r => r.addEventListener("change", () => {
@@ -844,7 +1167,6 @@ async function renderVoteCircuit() {
       }));
     });
 
-    // validation
     $("btnValidateVote")?.addEventListener("click", async () => {
       if (!selected.round3 || !selected.round5) {
         alert("Merci de répondre aux deux questions avant de valider.");
@@ -859,7 +1181,7 @@ async function renderVoteCircuit() {
           updatedAt: new Date()
         });
         alert("Votre vote est enregistré et verrouillé. Merci !");
-        renderVoteCircuit(); // rerender en mode locked
+        renderVoteCircuit();
       } catch (e) {
         console.error(e);
         alert("Erreur lors de l’enregistrement du vote.");
@@ -973,7 +1295,6 @@ async function loadEstacupForm(userData, editing = false) {
       <option value="Livrée MEKA" ${existing?.liveryChoice==="Livrée MEKA"?"selected":""}>Livrée MEKA</option>
     </select>
 
-    <!-- Steam ID demandé ici -->
     <input type="text" id="steam" value="${escapeHtml(existing?.steamID64 || existing?.steamId || userData.steamID64 || userData.steamId || '')}" placeholder="Steam ID64 (765…) ou URL de profil" required>
 
     <div id="colors" style="margin-top:8px;${existing?.liveryChoice==="Livrée semi-perso"?"":"display:none"}">
@@ -1023,7 +1344,6 @@ async function loadEstacupForm(userData, editing = false) {
       return;
     }
 
-    // Steam ID : accepte URL ou ID64 (765…)
     const steamRaw = form.querySelector("#steam").value.trim();
     const steam64  = extractSteam64(steamRaw);
     if (!steam64) {
@@ -1048,7 +1368,6 @@ async function loadEstacupForm(userData, editing = false) {
     };
 
     if (payload.liveryChoice === "Livrée semi-perso") {
-      const DEFAULT_COLORS = { color1: "#000000", color2: "#01234A", color3: "#6BDAEC" };
       payload.liveryColors = {
         color1: form.querySelector("#c1").value || DEFAULT_COLORS.color1,
         color2: form.querySelector("#c2").value || DEFAULT_COLORS.color2,
@@ -1065,13 +1384,11 @@ async function loadEstacupForm(userData, editing = false) {
       } else {
         await addDoc(collection(db, "estacup_signups"), { ...payload, validated: false, uid: auth.currentUser.uid });
       }
-      // maj cache
-      signupCache.set(auth.currentUser.uid, { teamName: payload.teamName, raceNumber: payload.raceNumber, carChoice: payload.carChoice });
+      signupCache.set(auth.currentUser.uid, { teamName: payload.teamName, raceNumber: payload.raceNumber, carChoice: payload.carChoice, steamID64: payload.steamID64, steamId: payload.steamId });
 
       alert("Inscription ESTACUP enregistrée !");
       loadEstacupEngages();
       loadEstacupForm(userData, false);
-      // affiche aussi dans Infos
       const steamLine = $("steamIdLine");
       if (steamLine && steam64) steamLine.textContent = steam64;
     } catch (err) {
@@ -1147,7 +1464,7 @@ $("submitReclam")?.addEventListener("click", async () => {
       description: desc,
       youtubeUrl: video,
       uid: currentUid,
-      date: new Date(),      // date d'envoi de la réclamation
+      date: new Date(),
       status: "pending"
     });
 
@@ -1204,7 +1521,6 @@ async function loadReclamHistory() {
           <p><strong>Vidéo :</strong> ${safeUrl ? `<a href="${safeUrl}" target="_blank" rel="noopener">Ouvrir la vidéo</a>` : "-"}</p>
         </div>`;
       } else {
-        // fallback legacy (ancienne structure)
         html += `<div class="course-box">
           <p><strong>${(toDate(r.date)||new Date()).toLocaleString("fr-FR")}</strong> — <em>${escapeHtml(r.status || "pending")}</em></p>
           <p><strong>Course :</strong> ${escapeHtml(r.courseText || "-")}</p>
@@ -1242,34 +1558,82 @@ async function fetchAllEstacupCoursesSorted() {
   return only;
 }
 
-/* ---- Classement Pilotes ---- */
+/* ---- Classement Pilotes avec vraie course joker (sprint+main par round) ---- */
 async function loadEstacupPilotStandings() {
   const host = $("estacupPilotStandings");
   if (!host) return;
-  host.innerHTML = loaderHtml("Calcul en cours…"); // spinner
+  host.innerHTML = loaderHtml("Calcul en cours…");
 
   try {
     await ensureSignupCache();
     const courses = await fetchAllEstacupCoursesSorted();
-    const perPilot = new Map(); // uid -> {uid, first,last,name, team, points, starts, wins, podiums}
+
+    const perPilot = new Map();
+    const allRounds = new Set();
+    const roundLabels = new Map();
 
     for (const c of courses) {
       const parts = Array.isArray(c.participants) ? c.participants : [];
       const isSplit1 = Number(c.split) === 1 || c.split === undefined || c.split === null;
 
+      const roundKey = getCourseRoundKey(c);
+      const roundLabel = getCourseRoundLabel(c);
+      allRounds.add(roundKey);
+      if (!roundLabels.has(roundKey)) roundLabels.set(roundKey, roundLabel);
+
+      const raceKind = getRaceKind(c);
+      const splitVal = c.split;
+
       for (const p of parts) {
         const uid  = pickUid(p);
         if (!uid) continue;
+
         const { first, last } = splitNameParts(p);
         const name = `${first} ${last}`.trim() || (p.name || "Pilote");
         const team = await resolveTeam(uid, c.id, p);
         const pts  = await resolvePoints(uid, c.id, p);
 
-        if (!perPilot.has(uid)) perPilot.set(uid, { uid, first, last, name, team, points:0, starts:0, wins:0, podiums:0 });
+        if (!perPilot.has(uid)) {
+          perPilot.set(uid, {
+            uid,
+            first,
+            last,
+            name,
+            team,
+            points: 0,
+            starts: 0,
+            wins: 0,
+            podiums: 0,
+            roundResults: {}
+          });
+        }
         const row = perPilot.get(uid);
 
         row.points += pts;
         row.starts += 1;
+
+        if (!row.roundResults[roundKey]) {
+          row.roundResults[roundKey] = {
+            points: 0,
+            races: 0,
+            sprintPoints: 0,
+            mainPoints: 0,
+            otherPoints: 0,
+            split: splitVal ?? null
+          };
+        }
+        const rr = row.roundResults[roundKey];
+        rr.points += pts;
+        rr.races  += 1;
+        if (rr.split == null && splitVal != null) rr.split = splitVal;
+
+        if (raceKind === "sprint") {
+          rr.sprintPoints += pts;
+        } else if (raceKind === "main") {
+          rr.mainPoints += pts;
+        } else {
+          rr.otherPoints += pts;
+        }
 
         const pos = Number(p.position ?? p.stats?.position);
         if (isSplit1 && Number.isFinite(pos)) {
@@ -1281,29 +1645,115 @@ async function loadEstacupPilotStandings() {
       }
     }
 
-    const rows = [...perPilot.values()].sort((a,b)=>{
-      if (b.points  !== a.points)  return b.points - a.points;
-      if (b.wins    !== a.wins)    return b.wins   - a.wins;
-      if (b.podiums !== a.podiums) return b.podiums - a.podiums;
-      return (a.name||"").localeCompare(b.name||"");
-    });
-
+    const rows = [...perPilot.values()];
     if (rows.length === 0) {
       host.innerHTML = "<p class='muted-note'>Aucune manche ESTACUP trouvée.</p>";
       return;
     }
 
-    let html = `<table class="table-standings"><thead><tr>
-      <th>#</th><th>Pilote</th><th>Équipe</th><th>Points</th><th>Victoires</th><th>Podiums</th><th>Départs</th>
-    </tr></thead><tbody>`;
+    const maxStarts = rows.reduce((m, r) => Math.max(m, r.starts || 0), 0);
+    const useJoker = !!$("jokerTogglePilots")?.checked;
+    const applyJoker = useJoker && allRounds.size > 1 && maxStarts > 0;
+
+    rows.forEach(r => {
+      r.displayPoints = r.points;
+      r.jokerRemovedRound = null;
+      r.jokerRemovedPoints = 0;
+
+      if (!applyJoker) return;
+      if ((r.starts || 0) < maxStarts) return;
+
+      const rrAll = r.roundResults || {};
+      let worstPoints = Infinity;
+      let worstRoundKey = null;
+
+      for (const key in rrAll) {
+        if (!Object.prototype.hasOwnProperty.call(rrAll, key)) continue;
+        const val = rrAll[key]?.points;
+        if (!Number.isFinite(val)) continue;
+        if (val < worstPoints) {
+          worstPoints = val;
+          worstRoundKey = key;
+        }
+      }
+
+      if (worstRoundKey !== null && worstPoints !== Infinity) {
+        r.displayPoints = r.points - worstPoints;
+        r.jokerRemovedRound = worstRoundKey;
+        r.jokerRemovedPoints = worstPoints;
+      }
+    });
+
+    rows.sort((a,b)=>{
+      if (b.displayPoints  !== a.displayPoints)  return b.displayPoints - a.displayPoints;
+      if (b.wins           !== a.wins)          return b.wins   - a.wins;
+      if (b.podiums        !== a.podiums)       return b.podiums - a.podiums;
+      return (a.name||"").localeCompare(b.name||"");
+    });
+
+    let html = "";
+    if (applyJoker) {
+      html += `<p class="muted-note" style="margin-bottom:6px;">
+        Mode <strong>course joker</strong> activé : pour les pilotes ayant participé à toutes les courses,
+        on retire leur pire week-end, c’est-à-dire le <strong>total sprint + principale du même round</strong>.
+        La colonne dédiée indique : <em>round X, Split Y Sprint Pₛ, Principale Pₘ</em>.
+      </p>`;
+    }
+
+    if (applyJoker) {
+      html += `<table class="table-standings"><thead><tr>
+        <th>#</th><th>Pilote</th><th>Équipe</th><th>Points (joker)</th><th>Pire round (retiré)</th><th>Victoires</th><th>Podiums</th><th>Départs</th>
+      </tr></thead><tbody>`;
+    } else {
+      html += `<table class="table-standings"><thead><tr>
+        <th>#</th><th>Pilote</th><th>Équipe</th><th>Points</th><th>Victoires</th><th>Podiums</th><th>Départs</th>
+      </tr></thead><tbody>`;
+    }
 
     rows.forEach((r, i) => {
-      const display = (r.last ? r.last.toUpperCase() : "") + (r.first ? ` ${r.first}` : (r.name ? ` ${r.name}`:""));
-      html += `<tr>
-        <td><span class="rank-badge">${i+1}</span></td>
-        <td>${escapeHtml(display.trim() || r.uid)}</td>
+      const displayName = (r.last ? r.last.toUpperCase() : "") + (r.first ? ` ${r.first}` : (r.name ? ` ${r.name}`:""));
+      const cleanName = displayName.trim() || r.uid;
+
+      const jokerInfo = applyJoker && r.jokerRemovedRound
+        ? `<br><span class="muted-note" style="font-size:0.8rem;">(joker : -${r.jokerRemovedPoints} pts)</span>`
+        : "";
+
+      const pointsCell = applyJoker
+        ? `<td><strong>${r.displayPoints}</strong>${jokerInfo}</td>`
+        : `<td><strong>${r.points}</strong></td>`;
+
+      let worstRoundCell = "";
+      if (applyJoker) {
+        let content;
+        if (r.jokerRemovedRound) {
+          const lbl = roundLabels.get(r.jokerRemovedRound) || `Round ${r.jokerRemovedRound}`;
+          const rr = r.roundResults?.[r.jokerRemovedRound];
+          const sprintPts = rr?.sprintPoints ?? 0;
+          const mainPts   = rr?.mainPoints ?? 0;
+          const splitVal  = rr?.split;
+          const splitTxt  = splitVal != null ? `Split ${splitVal} ` : "";
+          content = `${escapeHtml(lbl)}, ${splitTxt}Sprint P${sprintPts}, Principale P${mainPts}`;
+
+        } else if ((r.starts || 0) < maxStarts) {
+          content = "— (saison incomplète)";
+        } else {
+          content = "—";
+        }
+        worstRoundCell = `<td>${content}</td>`;
+      }
+
+      const rank = i + 1;
+      const rowClass =
+        rank === 1 ? "podium-1" :
+        rank === 2 ? "podium-2" :
+        rank === 3 ? "podium-3" : "";
+
+      html += `<tr class="${rowClass}">
+        <td><span class="rank-badge">${rank}</span></td>
+        <td class="pilot-name-cell" data-uid="${escapeHtml(r.uid)}" data-name="${escapeHtml(cleanName)}">${escapeHtml(cleanName)}</td>
         <td>${escapeHtml(r.team || "(Sans équipe)")}</td>
-        <td><strong>${r.points}</strong></td>
+        ${pointsCell}
+        ${worstRoundCell}
         <td>${r.wins}</td>
         <td>${r.podiums}</td>
         <td>${r.starts}</td>
@@ -1312,6 +1762,7 @@ async function loadEstacupPilotStandings() {
 
     html += `</tbody></table>`;
     host.innerHTML = html;
+    setupPilotNameHover(host);
 
   } catch (e) {
     console.error(e);
@@ -1319,28 +1770,31 @@ async function loadEstacupPilotStandings() {
   }
 }
 
-/* ---- Classement Équipes ---- */
+/* ---- Classement Équipes avec course joker sur total de round ---- */
 async function loadEstacupTeamStandings() {
   const host = $("estacupTeamStandings");
   if (!host) return;
-  host.innerHTML = loaderHtml("Calcul en cours…"); // spinner
+  host.innerHTML = loaderHtml("Calcul en cours…");
 
   try {
     await ensureSignupCache();
     const courses = await fetchAllEstacupCoursesSorted();
-    const perTeam = new Map(); // team -> {team, points, wins, podiums}
+    const perTeam = new Map();
+    const allRounds = new Set();
 
     for (const c of courses) {
       const parts = Array.isArray(c.participants) ? c.participants : [];
       const byTeam = new Map();
 
       const isSplit1 = Number(c.split) === 1 || c.split === undefined || c.split === null;
+      const roundKey = getCourseRoundKey(c);
+      const roundLabel = getCourseRoundLabel(c);
+      allRounds.add(roundKey);
 
       for (const p of parts) {
         const uid  = pickUid(p);
         if (!uid) continue;
 
-        // Exclure les sans équipe dès la collecte
         const teamNameRaw = await resolveTeam(uid, c.id, p);
         const team = normTeamName(teamNameRaw);
         if (team === "(Sans équipe)") continue;
@@ -1352,14 +1806,20 @@ async function loadEstacupTeamStandings() {
         byTeam.get(team).push({ pts: Number.isFinite(pts) ? pts : 0, pos });
       }
 
-      // agrégation course -> 2 meilleurs pilotes par équipe
       byTeam.forEach((arr, team) => {
         arr.sort((a,b)=> (b.pts !== a.pts) ? (b.pts - a.pts) : (a.pos - b.pos));
         const score = (arr[0]?.pts ?? 0) + (arr[1]?.pts ?? 0);
 
-        if (!perTeam.has(team)) perTeam.set(team, { team, points:0, wins:0, podiums:0 });
+        if (!perTeam.has(team)) {
+          perTeam.set(team, { team, points:0, wins:0, podiums:0, roundResults:{} });
+        }
         const agg = perTeam.get(team);
         agg.points += score;
+
+        if (!agg.roundResults[roundKey]) {
+          agg.roundResults[roundKey] = { points: 0, label: roundLabel };
+        }
+        agg.roundResults[roundKey].points += score;
 
         if (isSplit1) {
           arr.forEach(r => {
@@ -1372,27 +1832,84 @@ async function loadEstacupTeamStandings() {
       });
     }
 
-    const rows = [...perTeam.values()].sort((a,b)=>{
-      if (b.points !== a.points) return b.points - a.points;
-      if (b.wins   !== a.wins)   return b.wins   - a.wins;
-      if (b.podiums!== a.podiums)return b.podiums- a.podiums;
-      return (a.team||"").localeCompare(b.team||"");
-    });
-
+    const rows = [...perTeam.values()];
     if (rows.length === 0) {
       host.innerHTML = "<p class='muted-note'>Aucune équipe (hors “Sans équipe”) trouvée.</p>";
       return;
     }
 
-    let html = `<table class="table-standings"><thead><tr>
+    const maxRounds = rows.reduce((m, r) => {
+      const rr = r.roundResults || {};
+      return Math.max(m, Object.keys(rr).length);
+    }, 0);
+    const useJoker = !!$("jokerToggleTeams")?.checked;
+    const applyJoker = useJoker && allRounds.size > 1 && maxRounds > 0;
+
+    rows.forEach(r => {
+      r.displayPoints = r.points;
+      r.jokerRemovedRound = null;
+      r.jokerRemovedPoints = 0;
+
+      if (!applyJoker) return;
+
+      const rr = r.roundResults || {};
+      const teamRounds = Object.keys(rr).length;
+      if (teamRounds < maxRounds) return;
+
+      let worstPoints = Infinity;
+      let worstRoundKey = null;
+      for (const key in rr) {
+        if (!Object.prototype.hasOwnProperty.call(rr, key)) continue;
+        const val = rr[key]?.points;
+        if (!Number.isFinite(val)) continue;
+        if (val < worstPoints) {
+          worstPoints = val;
+          worstRoundKey = key;
+        }
+      }
+
+      if (worstRoundKey !== null && worstPoints !== Infinity) {
+        r.displayPoints = r.points - worstPoints;
+        r.jokerRemovedRound = worstRoundKey;
+        r.jokerRemovedPoints = worstPoints;
+      }
+    });
+
+    rows.sort((a,b)=>{
+      if (b.displayPoints !== a.displayPoints) return b.displayPoints - a.displayPoints;
+      if (b.wins         !== a.wins)         return b.wins   - a.wins;
+      if (b.podiums      !== a.podiums)      return b.podiums- a.podiums;
+      return (a.team||"").localeCompare(b.team||"");
+    });
+
+    let html = "";
+    if (applyJoker) {
+      html += `<p class="muted-note" style="margin-bottom:6px;">
+        Mode <strong>course joker</strong> activé : pour chaque équipe présente à tous les rounds,
+        on retire son pire week-end, c’est-à-dire le <strong>total du round (sprint + principale)</strong>
+        calculé avec les deux meilleurs pilotes sur chaque course. Les équipes absentes sur un round gardent tous leurs résultats.
+      </p>`;
+    }
+
+    html += `<table class="table-standings"><thead><tr>
       <th>#</th><th>Équipe</th><th>Points</th><th>Victoires</th><th>Podiums</th>
     </tr></thead><tbody>`;
 
     rows.forEach((r, i) => {
-      html += `<tr>
-        <td><span class="rank-badge">${i+1}</span></td>
+      const jokerInfo = applyJoker && r.jokerRemovedRound
+        ? `<br><span class="muted-note" style="font-size:0.8rem;">(joker : -${r.jokerRemovedPoints} pts)</span>`
+        : "";
+
+      const rank = i + 1;
+      const rowClass =
+        rank === 1 ? "podium-1" :
+        rank === 2 ? "podium-2" :
+        rank === 3 ? "podium-3" : "";
+
+      html += `<tr class="${rowClass}">
+        <td><span class="rank-badge">${rank}</span></td>
         <td>${escapeHtml(r.team)}</td>
-        <td><strong>${r.points}</strong></td>
+        <td><strong>${r.displayPoints}</strong>${jokerInfo}</td>
         <td>${r.wins}</td>
         <td>${r.podiums}</td>
       </tr>`;

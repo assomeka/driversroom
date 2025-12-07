@@ -4,6 +4,9 @@
 // v2025-10-04 — points auto vs manuel, refresh points après DnD, sections Pilotes & ESTACUP intégrées du n°1
 // + v2025-10-15 — 👈 Ajout : onglet "Votes" (admin) — agrégation Round 3 & Round 5
 // + v2025-10-15-bis — Compat votes (q3/q5 et round3/round5) + fix barre B
+// + v2025-10-16 — Amélioration affichage résumé voitures + badge livrée + licence éditable
+// + v2025-10-16b — Tri des modèles par popularité + licence en select (Rookie / Challenger / Pro, coloré)
+// + v2025-10-16c — Date dernière mise à jour par pilote + tri dédié
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
@@ -109,6 +112,7 @@ const ImportState = {
   splitCount: 1,
   files: { sprintS1: null, mainS1: null, sprintS2: null, mainS2: null },
   parsed: { S1: { sprint: [], main: [] }, S2: { sprint: [], main: [] } },
+  lapData: {},                 // <<< nouveau : tours bruts par manche
   nameMap: new Map(),
   unmatched: [],
   usersCache: []
@@ -161,8 +165,6 @@ function setupNavigation() {
     if (key === "incidents") { loadReclamations?.(); loadIncidentHistory?.(); loadCourses?.(); loadPilots?.(); }
     if (key === "estacup") loadEstacupSignups?.();
     if (key === "courses") loadCourses?.();
-    if (key === "pilots")  document.getElementById("refreshPilots")?.click();
-    // 👇 recharge votes à l’ouverture (pas besoin de temps réel)
     if (key === "votes")   loadVotesResults?.();
   }
   buttons.forEach((btn) => btn.addEventListener("click", () => showSection(btn.dataset.section)));
@@ -734,7 +736,7 @@ function smartSplitName(full) {
   if (s.includes(",")) { const [ln, fn] = s.split(",").map(x => x.trim()); return { firstName: fn || "", lastName: ln || "" }; }
   const t = s.split(" ");
   if (t.length === 1) return { firstName: "", lastName: t[0] };
-  const isUpperLike = w => { const letters = (w.match(/[A-ZÀ-ÖØ-Ý]/gi) || []).join(""); return letters && letters === letters.toUpperCase(); };
+  const isUpperLike = w => { const letters = (w.match(/[A-Z À-ÖØ-Ý]/gi) || []).join(""); return letters && letters === letters.toUpperCase(); };
   if (t.length === 2) {
     const [a, b] = t;
     if (isUpperLike(a) && !isUpperLike(b)) return { firstName: b, lastName: a };
@@ -1059,6 +1061,13 @@ async function handleAnalyzeJson() {
   const jMainS1 = await readFileAsJson(ImportState.files.mainS1).catch(() => null);
   const jSprintS2 = (ImportState.splitCount === 2) ? await readFileAsJson(ImportState.files.sprintS2).catch(() => null) : null;
   const jMainS2 = (ImportState.splitCount === 2) ? await readFileAsJson(ImportState.files.mainS2).catch(() => null) : null;
+  // Tours bruts RealPenalty pour les graphes du dashboard
+  ImportState.lapData = {
+    S1_sprint: Array.isArray(jSprintS1?.Laps) ? jSprintS1.Laps : [],
+    S1_main : Array.isArray(jMainS1?.Laps)   ? jMainS1.Laps   : [],
+    S2_sprint: Array.isArray(jSprintS2?.Laps) ? jSprintS2.Laps : [],
+    S2_main : Array.isArray(jMainS2?.Laps)   ? jMainS2.Laps   : []
+  };
 
   const s1s = extractResultsGeneric(jSprintS1) || [];
   const s1m = extractResultsGeneric(jMainS1) || [];
@@ -1158,30 +1167,68 @@ function applyMatchingSelections() {
 async function saveImportedResults() {
   const baseName = buildBaseName();
   const raceDate = $("raceDate")?.valueAsDate || new Date();
-  if (!baseName) { alert("Contexte course incomplet."); return; }
+
+  if (!baseName) {
+    alert("Contexte course incomplet.");
+    return;
+  }
 
   const races = [];
-  if (ImportState.parsed.S1.sprint.length) races.push({ key: "S1_sprint", label: "Sprint S1", rows: ImportState.parsed.S1.sprint });
-  if (ImportState.parsed.S1.main.length) races.push({ key: "S1_main", label: "Principale S1", rows: ImportState.parsed.S1.main });
-  if (ImportState.splitCount === 2 && ImportState.parsed.S2.sprint.length) races.push({ key: "S2_sprint", label: "Sprint S2", rows: ImportState.parsed.S2.sprint });
-  if (ImportState.splitCount === 2 && ImportState.parsed.S2.main.length) races.push({ key: "S2_main", label: "Principale S2", rows: ImportState.parsed.S2.main });
+  if (ImportState.parsed.S1.sprint.length) {
+    races.push({
+      key: "S1_sprint",
+      label: "Sprint S1",
+      rows: ImportState.parsed.S1.sprint
+    });
+  }
+  if (ImportState.parsed.S1.main.length) {
+    races.push({
+      key: "S1_main",
+      label: "Principale S1",
+      rows: ImportState.parsed.S1.main
+    });
+  }
+  if (ImportState.splitCount === 2 && ImportState.parsed.S2.sprint.length) {
+    races.push({
+      key: "S2_sprint",
+      label: "Sprint S2",
+      rows: ImportState.parsed.S2.sprint
+    });
+  }
+  if (ImportState.splitCount === 2 && ImportState.parsed.S2.main.length) {
+    races.push({
+      key: "S2_main",
+      label: "Principale S2",
+      rows: ImportState.parsed.S2.main
+    });
+  }
 
-  if (races.length === 0) { alert("Aucune manche à enregistrer."); return; }
+  if (!races.length) {
+    alert("Aucune manche à enregistrer.");
+    return;
+  }
 
   const baseTs = Date.now();
   let incr = 0;
 
   for (const race of races) {
     const { key, label, rows } = race;
+    if (!rows || !rows.length) continue;
+
+    // Recalcule proprement positions / gaps / pénalités
     recomputePositions(rows);
 
     const isSprint = keyIsSprint(key);
     const splitNum = (ImportState.splitCount === 1) ? 1 : keySplit(key);
+    const rawLapsForRace = Array.isArray(ImportState.lapData?.[key])
+      ? ImportState.lapData[key]
+      : [];
 
+    // Associer chaque ligne à un uid + infos pilote
     const withUid = [];
     for (const r of rows) {
-      const k = buildKey(r.lastName || "", r.firstName || "");
-      const map = ImportState.nameMap.get(k);
+      const nameKey = buildKey(r.lastName || "", r.firstName || "");
+      const map = ImportState.nameMap.get(nameKey);
       const uid = map?.uid || null;
       if (!uid) continue;
 
@@ -1189,84 +1236,126 @@ async function saveImportedResults() {
       const fullName = `${user?.firstName || r.firstName || ""} ${user?.lastName || r.lastName || ""}`.trim();
 
       const team = user?.teamName || r.team || "";
-      const car = carBrandFromName(normalizeCarName(user?.carChoice || r.car || ""));
+      const car  = carBrandFromName(
+        normalizeCarName(user?.carChoice || r.car || "")
+      );
 
-      // Points : 0 si NON ESTACUP ; barème auto si ESTACUP ; override si manuel
       const defaultPts = getDefaultPoints(isSprint, splitNum, r.position);
-      const points = Number.isFinite(r._pointsManual) ? r._pointsManual : (ImportState.isEstacup ? defaultPts : 0);
+      const points = Number.isFinite(r._pointsManual)
+        ? r._pointsManual
+        : (ImportState.isEstacup ? defaultPts : 0);
 
-      const obj = {
-        uid, name: fullName, position: r.position,
-        team, car,
-        bestLapMs: r.bestLapMs ?? null,
-        totalMs: Number.isFinite(r.adjTotalMs) ? r.adjTotalMs : (r.totalMs ?? null),
-        totalMsRaw: r.totalMs ?? null,
-        penaltyMs: (r.basePenaltyMs || 0) + (r.editPenaltyMs || 0),
+      const bestLapMs   = Number.isFinite(r.bestLapMs) ? r.bestLapMs : null;
+      const totalMsRaw  = Number.isFinite(r.totalMs)   ? r.totalMs   : null;
+      const penaltyMs   = (r.basePenaltyMs || 0) + (r.editPenaltyMs || 0);
+      const totalMsAdj  = Number.isFinite(totalMsRaw) ? (totalMsRaw + penaltyMs) : null;
+
+      withUid.push({
+        uid,
+        name: fullName || uid,
+        position: r.position,
+        team,
+        car,
+        bestLapMs,
+        totalMs: totalMsAdj,
+        totalMsRaw,
+        penaltyMs,
         laps: r._effLaps ?? r.laps ?? null,
-        status: Number.isFinite(r.totalMs) ? "OK" : "UNCLASSIFIED",
+        status: Number.isFinite(totalMsRaw) ? (r.status || "OK") : "UNCLASSIFIED",
         points
-      };
-      withUid.push(obj);
-    }
-
-    if (withUid.length < 2) alert(`${label}: moins de 2 pilotes mappés — ELO non mis à jour pour cette manche.`);
-
-    const ratingsMap = {};
-    for (const p of withUid) {
-      const s = await getDoc(doc(db, "users", p.uid));
-      ratingsMap[p.uid] = s.exists() ? (s.data().eloRating ?? 1000) : 1000;
-    }
-    const newRatings = withUid.length >= 2 ? computeEloUpdates(withUid, ratingsMap, 32) : {};
-
-    const raceId = `${baseTs + (incr++)}_${key}`;
-    const displayName = `${baseName} • ${label}`;
-
-    for (const part of withUid) {
-      await setDoc(doc(db, "users", part.uid, "raceHistory", raceId), {
-        name: displayName, date: raceDate, position: part.position,
-        team: part.team, car: part.car,
-        bestLapMs: part.bestLapMs, totalMs: part.totalMs,
-        totalMsRaw: part.totalMsRaw ?? null,
-        penaltyMs: part.penaltyMs ?? 0,
-        laps: part.laps ?? null,
-        status: part.status,
-        points: part.points
       });
     }
 
+    if (!withUid.length) {
+      console.warn("Aucun pilote mappé pour", label);
+      continue;
+    }
+
+    // Id unique partagé entre doc "courses" et "raceHistory"
+    const raceId = `${baseTs + (incr++)}_${key}`;
+    const displayName = `${baseName} • ${label}`.replace(/\bFinale\b/i, "Principale");
+    const lapData = rawLapsForRace.length ? { laps: rawLapsForRace } : null;
+
+    // 1) Historique de course dans users/{uid}/raceHistory/{raceId}
+    for (const p of withUid) {
+      await setDoc(doc(db, "users", p.uid, "raceHistory", raceId), {
+        name: displayName,
+        date: raceDate,
+        position: p.position,
+        team: p.team || null,
+        car: p.car || null,
+        bestLapMs: p.bestLapMs ?? null,
+        totalMs: p.totalMs ?? null,
+        totalMsRaw: p.totalMsRaw ?? null,
+        penaltyMs: p.penaltyMs ?? 0,
+        laps: p.laps ?? null,
+        status: p.status || "OK",
+        points: p.points ?? 0,
+        track: ImportState.circuit || null,
+        split: splitNum,
+        isSprint,
+        estacup: ImportState.isEstacup === true
+      });
+    }
+
+    // 2) Document global de course dans "courses"
     await setDoc(doc(db, "courses", raceId), {
       id: raceId,
       name: displayName,
       date: raceDate,
       estacup: ImportState.isEstacup === true,
+      isEstacup: ImportState.isEstacup === true,
       split: splitNum,
       round: ImportState.roundText || null,
       track: ImportState.circuit || null,
+      isSprint,
       participants: withUid.map(p => ({
-        uid: p.uid, name: p.name, position: p.position,
-        team: p.team, car: p.car,
-        bestLapMs: p.bestLapMs, totalMs: p.totalMs,
-        penaltyMs: p.penaltyMs, laps: p.laps,
-        points: p.points
+        uid: p.uid,
+        name: p.name,
+        position: p.position,
+        team: p.team,
+        car: p.car,
+        bestLapMs: p.bestLapMs,
+        totalMs: p.totalMs,
+        penaltyMs: p.penaltyMs,
+        laps: p.laps,
+        points: p.points,
+        status: p.status
+      })),
+      ...(lapData ? { lapData } : {}),
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    // Cache local pour l’éditeur
+    courseMap.set(raceId, {
+      id: raceId,
+      name: displayName,
+      date: raceDate,
+      participants: withUid.map(p => ({
+        uid: p.uid,
+        name: p.name,
+        position: p.position
       }))
     });
-    courseMap.set(raceId, {
-      id: raceId, name: displayName, date: raceDate,
-      participants: withUid.map(p => ({ uid: p.uid, name: p.name, position: p.position }))
-    });
-
-    if (withUid.length >= 2) {
-      for (const part of withUid) {
-        await updateDoc(doc(db, "users", part.uid), { eloRating: newRatings[part.uid] });
-      }
-    }
   }
 
+  // Recalcul global de l’ELO à partir de toutes les courses
+  await recalcAllEloFromCourses();
+
   alert("Import terminé et résultats enregistrés (1 doc par manche).");
-  $("matchBlock").style.display = "none"; $("previewBlock").style.display = "none";
-  ImportState.nameMap.clear(); ImportState.unmatched = [];
-  await loadCourses(); await loadIncidentHistory();
+  const matchBlock = $("matchBlock");
+  const previewBlock = $("previewBlock");
+  if (matchBlock) matchBlock.style.display = "none";
+  if (previewBlock) previewBlock.style.display = "none";
+  ImportState.nameMap.clear();
+  ImportState.unmatched = [];
+
+  await loadCourses();
+  await loadIncidentHistory();
 }
+
+
 function buildCourseHeader() {
   const baseName = buildBaseName();
   const raceDate = $("raceDate")?.valueAsDate || new Date();
@@ -1690,15 +1779,14 @@ function ensureCourseEditorShell() {
 }
 
 /* ---------------- Historique incidents / Réclamations ---------------- */
-/* ---------------- Historique incidents / Réclamations ---------------- */
 async function loadIncidentHistory() {
   const box = document.getElementById("incidentHistory");
   if (!box) return;
   box.innerHTML = "<p>Chargement…</p>";
 
   // petit utilitaire
-  const escapeHtml = (s) => (s||"").toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const toDateVal = (v) => v?.seconds ? new Date(v.seconds*1000) : (v ? new Date(v) : null);
+  const escapeHtmlLocal = (s) => (s||"").toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const toDateValLocal = (v) => v?.seconds ? new Date(v.seconds*1000) : (v ? new Date(v) : null);
   const nameByUid = (uid) => {
     const p = (ImportState.usersCache || []).find(x => x.id === uid);
     return p ? `${p.firstName} ${p.lastName}`.trim() : uid || "";
@@ -1722,7 +1810,7 @@ async function loadIncidentHistory() {
       const x = docu.data() || {};
       rows.push({
         id: docu.id,
-        date: toDateVal(x.date || x.createdAt || x.time) || null,
+        date: toDateValLocal(x.date || x.createdAt || x.time) || null,
         courseId: x.courseId || x.raceId || null,
         description: x.description || x.note || x.reason || "",
         pilotes: Array.isArray(x.pilotes) ? x.pilotes.map(p => ({
@@ -1743,7 +1831,7 @@ async function loadIncidentHistory() {
     function renderEditable(i) {
       const d = i.date ? i.date.toLocaleString("fr-FR") : "—";
       const courseLabel = i.courseId ? (courseById.get(i.courseId) || i.courseId) : "—";
-      const who = i.createdByName ? ` — <span style="opacity:.7">par ${escapeHtml(i.createdByName)}</span>` : "";
+      const who = i.createdByName ? ` — <span style="opacity:.7">par ${escapeHtmlLocal(i.createdByName)}</span>` : "";
 
       // lignes pilotes éditables (on ne modifie que "after" côté UI)
       const pilotsHtml = i.pilotes.map((p, idx) => {
@@ -1751,7 +1839,7 @@ async function loadIncidentHistory() {
         const deltaTxt = Number.isFinite(delta) ? ` (${delta>0?"+":""}${delta})` : "";
         return `
           <li style="margin:4px 0">
-            <strong>${escapeHtml(p.name || nameByUid(p.uid))}</strong>
+            <strong>${escapeHtmlLocal(p.name || nameByUid(p.uid))}</strong>
             — <span class="muted">avant:</span> ${p.before ?? "—"}
             → <span class="muted">après:</span>
             <input type="number" value="${p.after ?? ""}" data-idx="${idx}" data-id="${i.id}" style="width:90px;text-align:center" />
@@ -1767,11 +1855,11 @@ async function loadIncidentHistory() {
             <select class="hist-course">
               <option value="">—</option>
               ${Array.from(courseById.entries()).map(([cid,label]) =>
-                `<option value="${cid}" ${cid===i.courseId?'selected':''}>${escapeHtml(label)}</option>`).join("")}
+                `<option value="${cid}" ${cid===i.courseId?'selected':''}>${escapeHtmlLocal(label)}</option>`).join("")}
             </select>
           </div>
           <label class="muted">Description</label>
-          <textarea class="hist-desc" rows="3" style="width:100%;margin-bottom:6px">${escapeHtml(i.description)}</textarea>
+          <textarea class="hist-desc" rows="3" style="width:100%;margin-bottom:6px">${escapeHtmlLocal(i.description)}</textarea>
           <div><strong>Pilotes impactés</strong></div>
           <ul style="margin:6px 0 0 16px">${pilotsHtml}</ul>
 
@@ -1836,7 +1924,6 @@ async function loadIncidentHistory() {
 
 
 /* ======= RÉCLAMATIONS : inclut anciennes envoyées par admins + legacy ======= */
-/* ======= RÉCLAMATIONS : inclut anciennes envoyées par admins + legacy ======= */
 async function loadReclamations() {
   const box = document.getElementById("reclamationsBox");
   if (!box) return;
@@ -1862,70 +1949,70 @@ async function loadReclamations() {
 
   let all = [];
 
-  function toDateVal(v) {
+  function toDateValLocal(v) {
     if (!v) return null;
     if (v?.seconds) return new Date(v.seconds * 1000);
     const d = new Date(v);
     return isNaN(d) ? null : d;
   }
-  const normLower = (s) => (s || "").toString().normalize("NFKD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
-  const escapeHtml = (s) => (s||"").toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const normLowerLocal = (s) => (s || "").toString().normalize("NFKD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+  const escapeHtmlLocal = (s) => (s||"").toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
   function normalizeRow(d, id, roleHint = "") {
-  const row = { ...(d || {}) };
-  row._id = id;
+    const row = { ...(d || {}) };
+    row._id = id;
 
-  // date (création de la réclamation)
-  row._created =
-    toDateVal(row.date) || toDateVal(row.createdAt) || toDateVal(row.sentAt) ||
-    toDateVal(row.time) || toDateVal(row.timestamp) || null;
+    // date (création de la réclamation)
+    row._created =
+      toDateValLocal(row.date) || toDateValLocal(row.createdAt) || toDateValLocal(row.sentAt) ||
+      toDateValLocal(row.time) || toDateValLocal(row.timestamp) || null;
 
-  // qui a écrit ?
-  const flagAdmin = row.isAdmin === true || row.fromAdmin === true || row.admin === true ||
-                    row.senderRole === "admin" || row.createdBy === "admin" || roleHint === "admin";
-  const flagUser  = row.senderRole === "user" || row.createdBy === "user" || row.authorRole === "user";
-  row._authorRole = flagAdmin ? "admin" : (row.authorRole || (flagUser ? "user" : ""));
+    // qui a écrit ?
+    const flagAdmin = row.isAdmin === true || row.fromAdmin === true || row.admin === true ||
+                      row.senderRole === "admin" || row.createdBy === "admin" || roleHint === "admin";
+    const flagUser  = row.senderRole === "user" || row.createdBy === "user" || row.authorRole === "user";
+    row._authorRole = flagAdmin ? "admin" : (row.authorRole || (flagUser ? "user" : ""));
 
-  // statuts
-  row.status = row.status || row.state || row.etat || "open";
+    // statuts
+    row.status = row.status || row.state || row.etat || "open";
 
-  // identifiants utiles
-  row.uid      = row.uid || row.userId || row.authorUid || row.pilotUid || row.driverUid || null; // plaignant
-  row.pilotUid = row.pilotUid || row.uid || row.userId || row.driverUid || null;                  // cible éventuelle
-  row.courseId = row.courseId || row.raceId || row.eventId || null;
+    // identifiants utiles
+    row.uid      = row.uid || row.userId || row.authorUid || row.pilotUid || row.driverUid || null; // plaignant
+    row.pilotUid = row.pilotUid || row.uid || row.userId || row.driverUid || null;                  // cible éventuelle
+    row.courseId = row.courseId || row.raceId || row.eventId || null;
 
-  // notes admin
-  row.adminNotes = row.adminNotes || row.notes || row.comment || "";
+    // notes admin
+    row.adminNotes = row.adminNotes || row.notes || row.comment || "";
 
-  // champs saisis côté pilote (legacy)
-  row.courseText  = row.courseText  || row.raceName || row.course || "";
-  row.pilotsText  = row.pilotsText  || row.pilots  || "";
-  row.momentText  = row.momentText  || row.moment  || "";
-  row.description = row.description || row.reason  || row.text || row.body || row.content || "";
+    // champs saisis côté pilote (legacy)
+    row.courseText  = row.courseText  || row.raceName || row.course || "";
+    row.pilotsText  = row.pilotsText  || row.pilots  || "";
+    row.momentText  = row.momentText  || row.moment  || "";
+    row.description = row.description || row.reason  || row.text || row.body || row.content || "";
 
-  // nouveaux champs réclamation (V2)
-  const rawRaceDate = row.raceDate || row.courseDate || row.dateCourse || row.race_date;
-  row._raceDate = toDateVal(rawRaceDate);
-  if (row.split === undefined || row.split === null) {
-    row.split = row.splitNum ?? row.splitNumber ?? row.split_text ?? null;
+    // nouveaux champs réclamation (V2)
+    const rawRaceDate = row.raceDate || row.courseDate || row.dateCourse || row.race_date;
+    row._raceDate = toDateValLocal(rawRaceDate);
+    if (row.split === undefined || row.split === null) {
+      row.split = row.splitNum ?? row.splitNumber ?? row.split_text ?? null;
+    }
+    row.youtubeUrl = row.youtubeUrl || row.videoUrl || row.link || row.video || row.youtube || "";
+
+    // message synthèse (pour l’aperçu carte)
+    if (!row.message || !row.message.trim()) {
+      const parts = [];
+      if (row._raceDate) parts.push(`Date: ${dateOnlyStr(row._raceDate)}`);
+      if (row.split != null) parts.push(`Split ${row.split}`);
+      if (row.courseText) parts.push(`Course: ${row.courseText}`);
+      if (row.pilotsText) parts.push(`Pilote(s): ${row.pilotsText}`);
+      if (row.momentText) parts.push(`Moment: ${row.momentText}`);
+      if (row.description) parts.push(row.description);
+      if (row.youtubeUrl) parts.push(`YouTube: ${row.youtubeUrl}`);
+      row.message = parts.join(" • ");
+    }
+
+    return row;
   }
-  row.youtubeUrl = row.youtubeUrl || row.videoUrl || row.link || row.video || row.youtube || "";
-
-  // message synthèse (pour l’aperçu carte)
-  if (!row.message || !row.message.trim()) {
-    const parts = [];
-    if (row._raceDate) parts.push(`Date: ${dateOnlyStr(row._raceDate)}`);
-    if (row.split != null) parts.push(`Split ${row.split}`);
-    if (row.courseText) parts.push(`Course: ${row.courseText}`);
-    if (row.pilotsText) parts.push(`Pilote(s): ${row.pilotsText}`);
-    if (row.momentText) parts.push(`Moment: ${row.momentText}`);
-    if (row.description) parts.push(row.description);
-    if (row.youtubeUrl) parts.push(`YouTube: ${row.youtubeUrl}`);
-    row.message = parts.join(" • ");
-  }
-
-  return row;
-}
 
   async function fetchCollection(name, roleHint = "") {
     try {
@@ -1958,29 +2045,28 @@ async function loadReclamations() {
     return p ? `${p.firstName} ${p.lastName}`.trim() : "";
   }
 
-function dateStr(d) {
-  if (!d) return "—";
-  const dd = new Date(d);
-  const y  = dd.getFullYear();
-  const m  = String(dd.getMonth() + 1).padStart(2, "0");
-  const da = String(dd.getDate()).padStart(2, "0");
-  const hh = String(dd.getHours()).padStart(2, "0");
-  const mi = String(dd.getMinutes()).padStart(2, "0");
-  return `${da}/${m}/${y} ${hh}h${mi}`;
-}
+  function dateStr(d) {
+    if (!d) return "—";
+    const dd = new Date(d);
+    const y  = dd.getFullYear();
+    const m  = String(dd.getMonth() + 1).padStart(2, "0");
+    const da = String(dd.getDate()).padStart(2, "0");
+    const hh = String(dd.getHours()).padStart(2, "0");
+    const mi = String(dd.getMinutes()).padStart(2, "0");
+    return `${da}/${m}/${y} ${hh}h${mi}`;
+  }
 
-function dateOnlyStr(d) {
-  if (!d) return "—";
-  const dd = new Date(d);
-  const y  = dd.getFullYear();
-  const m  = String(dd.getMonth() + 1).padStart(2, "0");
-  const da = String(dd.getDate()).padStart(2, "0");
-  return `${da}/${m}/${y}`;
-}
-
+  function dateOnlyStr(d) {
+    if (!d) return "—";
+    const dd = new Date(d);
+    const y  = dd.getFullYear();
+    const m  = String(dd.getMonth() + 1).padStart(2, "0");
+    const da = String(dd.getDate()).padStart(2, "0");
+    return `${da}/${m}/${y}`;
+  }
 
   function applyFilters() {
-    const q = normLower(searchEl.value);
+    const q = normLowerLocal(searchEl.value);
     const mode = filterEl.value;
     let rows = all.slice();
     if (mode === "user")  rows = rows.filter(r => r._authorRole !== "admin");
@@ -1991,7 +2077,7 @@ function dateOnlyStr(d) {
         r.adminNotes, r.courseText, r.pilotsText, r.momentText, r.description,
         r.youtubeUrl, r.split, dateOnlyStr(r._raceDate)
       ].join(" ");
-      return normLower(pile).includes(q);
+      return normLowerLocal(pile).includes(q);
     });
     renderList(rows);
   }
@@ -2011,10 +2097,10 @@ function dateOnlyStr(d) {
       card.innerHTML = `
         <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
           <div>
-            <div style="font-weight:600">${escapeHtml(r.message).slice(0,140)}${r.message.length>140?'…':''}</div>
-            <div class="muted" style="margin-top:4px">${escapeHtml(author)} • ${escapeHtml(statusLabel(r.status))}</div>
+            <div style="font-weight:600">${escapeHtmlLocal(r.message).slice(0,140)}${r.message.length>140?'…':''}</div>
+            <div class="muted" style="margin-top:4px">${escapeHtmlLocal(author)} • ${escapeHtmlLocal(statusLabel(r.status))}</div>
           </div>
-          <div class="muted">${escapeHtml(dateStr(r._created))}</div>
+          <div class="muted">${escapeHtmlLocal(dateStr(r._created))}</div>
         </div>
       `;
       card.addEventListener("click", () => openDetailCard(r));
@@ -2030,7 +2116,7 @@ function dateOnlyStr(d) {
       const c = courseMap.get(id);
       const d = (c?.date?.seconds ? new Date(c.date.seconds * 1000) : new Date(c?.date || Date.now())).toLocaleDateString("fr-FR");
       const line = `${d} — ${c?.name || "Course"}`;
-      opts.push(`<option value="${id}" ${id===selectedId?'selected':''}>${escapeHtml(line)}</option>`);
+      opts.push(`<option value="${id}" ${id===selectedId?'selected':''}>${escapeHtmlLocal(line)}</option>`);
     }
     return opts.join("");
   }
@@ -2041,16 +2127,16 @@ function dateOnlyStr(d) {
       <div class="card" style="padding:12px">
         <button type="button" id="reclamBack" class="muted" style="margin-bottom:12px">← Retour</button>
 
-        <div class="muted" style="margin-bottom:6px"><strong>Réclamation #${escapeHtml(row._id)}</strong> — ${escapeHtml(dateStr(row._created))}</div>
+        <div class="muted" style="margin-bottom:6px"><strong>Réclamation #${escapeHtmlLocal(row._id)}</strong> — ${escapeHtmlLocal(dateStr(row._created))}</div>
 
         <label style="display:block;margin-bottom:6px;font-weight:600">Message</label>
 <div class="muted" style="background:#1113; padding:8px; border-radius:8px; margin-bottom:12px">
-  <div><strong>Date de la course :</strong> ${escapeHtml(dateOnlyStr(row._raceDate))}</div>
-  <div><strong>Split :</strong> ${row.split != null ? escapeHtml("Split " + row.split) : "—"}</div>
-  <div><strong>Description :</strong> ${escapeHtml(row.description || "—")}</div>
+  <div><strong>Date de la course :</strong> ${escapeHtmlLocal(dateOnlyStr(row._raceDate))}</div>
+  <div><strong>Split :</strong> ${row.split != null ? escapeHtmlLocal("Split " + row.split) : "—"}</div>
+  <div><strong>Description :</strong> ${escapeHtmlLocal(row.description || "—")}</div>
   <div><strong>Vidéo :</strong> ${
     row.youtubeUrl
-      ? `<a href="${escapeHtml(row.youtubeUrl)}" target="_blank" rel="noopener">Ouvrir la vidéo</a>`
+      ? `<a href="${escapeHtmlLocal(row.youtubeUrl)}" target="_blank" rel="noopener">Ouvrir la vidéo</a>`
       : "—"
   }</div>
 </div>
@@ -2077,7 +2163,7 @@ function dateOnlyStr(d) {
           </div>
           <div>
             <label class="muted">Auteur</label>
-            <input type="text" id="reclamAuthor" disabled value="${escapeHtml(author)}" />
+            <input type="text" id="reclamAuthor" disabled value="${escapeHtmlLocal(author)}" />
           </div>
         </div>
 
@@ -2157,21 +2243,53 @@ async function loadEstacupSignups() {
   list.innerHTML = "<p>Chargement…</p>";
 
   const snap = await getDocs(collection(db, "estacup_signups"));
-  if (snap.empty) {
-    list.innerHTML = "<p>Aucune inscription.</p>";
-    return;
-  }
-
   const usersSnap = await getDocs(collection(db, "users"));
+
   const usersById = new Map();
   usersSnap.forEach(u => usersById.set(u.id, u.data()));
+
+  const carCount = new Map();
+
+  if (snap.empty) {
+    list.innerHTML = "<p>Aucune inscription.</p>";
+    const carSummaryElEmpty = document.getElementById("estacupCarSummary");
+    if (carSummaryElEmpty) {
+      carSummaryElEmpty.textContent = "Aucune voiture sélectionnée pour l'instant.";
+    }
+    return;
+  }
 
   const pending = [];
   const validated = [];
   snap.forEach(docu => {
     const d = docu.data();
     (d.validated ? validated : pending).push({ id: docu.id, d });
+
+    const u = usersById.get(d.uid) || {};
+    const rawCar = d.carChoice || u.carChoice || "";
+    if (rawCar) {
+      const normalized = normalizeCarName(rawCar);
+      const key = normalized || rawCar;
+      carCount.set(key, (carCount.get(key) || 0) + 1);
+    }
   });
+
+  // Résumé voitures avec affichage en "pills" triées du plus choisi au moins choisi
+  const carSummaryEl = document.getElementById("estacupCarSummary");
+  if (carSummaryEl) {
+    if (carCount.size === 0) {
+      carSummaryEl.textContent = "Aucune voiture sélectionnée pour l'instant.";
+    } else {
+      const itemsHtml = [...carCount.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "fr", { sensitivity: "base" }))
+        .map(([name, count]) => `
+          <div class="car-summary-item">
+            <span class="car-summary-label">${escapeHtml(name)}</span>
+            <span class="car-summary-count">×${count}</span>
+          </div>`).join("");
+      carSummaryEl.innerHTML = `<div class="car-summary-grid">${itemsHtml}</div>`;
+    }
+  }
 
   const sortSel = document.getElementById("estacupSort");
   const mode = sortSel?.value || "arrival";
@@ -2179,7 +2297,22 @@ async function loadEstacupSignups() {
   const timeKey = (d) =>
     (toDateVal(d.validatedAt) || toDateVal(d.updatedAt) || toDateVal(d.createdAt) || new Date(0)).getTime();
 
+  const lastUpdateDate = (d) =>
+    toDateVal(d.updatedAt) || toDateVal(d.validatedAt) || toDateVal(d.createdAt) || null;
+
+  const lastUpdateKey = (d) => {
+    const dt = lastUpdateDate(d);
+    return dt ? dt.getTime() : 0;
+  };
+
+  const formatLastUpdate = (d) => {
+    const dt = lastUpdateDate(d);
+    if (!dt) return "—";
+    return dt.toLocaleString("fr-FR", { dateStyle: "short", timeStyle: "short" });
+  };
+
   const byArrival = (a, b) => timeKey(b.d) - timeKey(a.d);
+  const byUpdated = (a, b) => lastUpdateKey(b.d) - lastUpdateKey(a.d);
   const byName = (a, b) => {
     const la = `${a.d.lastName || ""}`.toLowerCase();
     const lb = `${b.d.lastName || ""}`.toLowerCase();
@@ -2192,9 +2325,14 @@ async function loadEstacupSignups() {
 
   const applySort = (arr) => {
     switch (mode) {
-      case "name":   arr.sort(byName);   break;
-      case "number": arr.sort(byNumber); break;
-      default:       arr.sort(byArrival);
+      case "updated":
+        arr.sort(byUpdated); break;
+      case "name":
+        arr.sort(byName);   break;
+      case "number":
+        arr.sort(byNumber); break;
+      default:
+        arr.sort(byArrival);
     }
   };
 
@@ -2204,10 +2342,36 @@ async function loadEstacupSignups() {
 
   const cardHtml = (id, d) => {
     const u = usersById.get(d.uid) || {};
-    const fullName = `${u.firstName || ""} ${u.lastName || ""}`.trim() || d.uid;
+    const fullName = `${u.firstName || d.firstName || ""} ${u.lastName || d.lastName || ""}`.trim() || d.uid;
+
+    const mSafety  = Number.isFinite(u.licensePoints) ? u.licensePoints : (d.licensePoints ?? 10);
+    const mRating  = Number.isFinite(u.eloRating) ? u.eloRating : (d.eloRating ?? 1000);
+
+    const rawLicense = u.licenseClass || d.licenseClass || "Rookie";
+    const lcNorm = String(rawLicense || "").toLowerCase();
+    const mLicense = lcNorm.includes("chall") ? "Challenger"
+                     : lcNorm.includes("pro") ? "Pro"
+                     : "Rookie";
+    const licCss = mLicense.toLowerCase();
+
+    const liveryChoice = d.liveryChoice || "Livrée perso";
+    const liveryDone   = d.liveryDone === true;
+
+    const colors = d.liveryColors || {};
+
+    const lastUpdateText = formatLastUpdate(d);
+
     return `
-      <div class="course-box" data-id="${id}">
-        <h4>${fullName}</h4>
+      <div class="course-box" data-id="${id}" data-uid="${d.uid}">
+        <div class="estacup-card-header">
+          <h4>${fullName}</h4>
+          <label class="livery-pill">
+            <input type="checkbox" class="edit-liveryDone" ${liveryDone ? "checked" : ""} />
+            Livrée réalisée
+          </label>
+        </div>
+
+        <div class="muted" style="margin-bottom:4px">Inscription</div>
         <div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));align-items:center">
           <input class="edit-first" value="${d.firstName || ""}" placeholder="Prénom" />
           <input class="edit-last"  value="${d.lastName || ""}"  placeholder="Nom" />
@@ -2218,16 +2382,33 @@ async function loadEstacupSignups() {
           <input class="edit-car"   value="${d.carChoice || ""}" placeholder="Voiture" />
           <input class="edit-number" type="number" min="1" max="999" value="${d.raceNumber ?? ""}" placeholder="N° de course (1-999)" />
           <select class="edit-livery">
-            <option value="Livrée perso" ${d.liveryChoice === "Livrée perso" ? "selected" : ""}>Livrée perso</option>
-            <option value="Livrée semi-perso" ${d.liveryChoice === "Livrée semi-perso" ? "selected" : ""}>Livrée semi-perso</option>
-            <option value="Livrée MEKA" ${d.liveryChoice === "Livrée MEKA" ? "selected" : ""}>Livrée MEKA</option>
+            <option value="Livrée perso" ${liveryChoice === "Livrée perso" ? "selected" : ""}>Livrée perso</option>
+            <option value="Livrée semi-perso" ${liveryChoice === "Livrée semi-perso" ? "selected" : ""}>Livrée semi-perso</option>
+            <option value="Livrée MEKA" ${liveryChoice === "Livrée MEKA" ? "selected" : ""}>Livrée MEKA</option>
           </select>
-          <div class="colors" ${d.liveryChoice !== "Livrée semi-perso" ? "style='display:none'" : ""}>
-            <input type="color" class="edit-color1" value="${d.liveryColors?.color1 || "#000000"}" />
-            <input type="color" class="edit-color2" value="${d.liveryColors?.color2 || "#01234A"}" />
-            <input type="color" class="edit-color3" value="${d.liveryColors?.color3 || "#6BDAEC"}" />
+          <div class="colors" ${liveryChoice !== "Livrée semi-perso" ? "style='display:none'" : ""}>
+            <input type="color" class="edit-color1" value="${colors.color1 || "#000000"}" />
+            <input type="color" class="edit-color2" value="${colors.color2 || "#01234A"}" />
+            <input type="color" class="edit-color3" value="${colors.color3 || "#6BDAEC"}" />
           </div>
         </div>
+
+        <div style="margin-top:10px;padding-top:8px;border-top:1px dashed #1f2937">
+          <div class="muted" style="margin-bottom:4px">Licence</div>
+          <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
+            <span>M Safety : <strong>${mSafety}</strong></span>
+            <span>M Rating : <strong>${mRating}</strong></span>
+            <span>Licence :
+              <select class="edit-licenseClass license-pill license-pill-${licCss}">
+                <option value="Rookie" ${mLicense === "Rookie" ? "selected" : ""}>Rookie</option>
+                <option value="Challenger" ${mLicense === "Challenger" ? "selected" : ""}>Challenger</option>
+                <option value="Pro" ${mLicense === "Pro" ? "selected" : ""}>Pro</option>
+              </select>
+            </span>
+          </div>
+        </div>
+
+        <div class="muted" style="margin-top:6px">Dernière mise à jour : ${escapeHtml(lastUpdateText)}</div>
 
         <p style="margin-top:10px">Statut : ${d.validated ? "✅ Validé" : "⏳ En attente"}</p>
         <div class="actions" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
@@ -2268,6 +2449,9 @@ async function loadEstacupSignups() {
         return;
       }
 
+      const licenseClassInput = card.querySelector(".edit-licenseClass");
+      const licenseClass = licenseClassInput ? (licenseClassInput.value || "").trim() : "";
+
       const payload = {
         firstName: card.querySelector(".edit-first").value.trim(),
         lastName:  card.querySelector(".edit-last").value.trim(),
@@ -2279,6 +2463,8 @@ async function loadEstacupSignups() {
         raceNumber: Number(card.querySelector(".edit-number").value) || null,
         liveryChoice: card.querySelector(".edit-livery").value,
         liveryColors: null,
+        liveryDone: card.querySelector(".edit-liveryDone")?.checked === true,
+        licenseClass: licenseClass || null,
         updatedAt: new Date()
       };
 
@@ -2291,6 +2477,16 @@ async function loadEstacupSignups() {
       }
 
       await updateDoc(doc(db, "estacup_signups", id), payload);
+
+      const uid = card.dataset.uid;
+      if (uid && licenseClass) {
+        try {
+          await updateDoc(doc(db, "users", uid), { licenseClass });
+        } catch (e) {
+          console.warn("Impossible de mettre à jour la licence du pilote", e);
+        }
+      }
+
       alert("Inscription mise à jour.");
       loadEstacupSignups();
     });
@@ -2306,6 +2502,19 @@ async function loadEstacupSignups() {
         colors.style.display = "none";
       }
     });
+  });
+
+  // couleur de la licence (Rookie / Challenger / Pro)
+  list.querySelectorAll(".edit-licenseClass").forEach(sel => {
+    const applyClass = (el) => {
+      el.classList.remove("license-pill-rookie","license-pill-challenger","license-pill-pro");
+      const v = (el.value || "").toLowerCase();
+      if (v === "rookie") el.classList.add("license-pill-rookie");
+      else if (v === "challenger") el.classList.add("license-pill-challenger");
+      else if (v === "pro") el.classList.add("license-pill-pro");
+    };
+    applyClass(sel);
+    sel.addEventListener("change", () => applyClass(sel));
   });
 
   list.querySelectorAll(".validate-signup").forEach((btn) => {
@@ -2358,7 +2567,7 @@ function setVoteRow(prefix, aCnt, bCnt) {
   if (aPctEl) aPctEl.textContent = `${aPct}%`;
   if (bPctEl) bPctEl.textContent = `${bPct}%`;
   if (aBarEl) aBarEl.style.width = `${aPct}%`;
-  if (bBarEl) bBarEl.style.width = `${bPct}%`; // ✅ fix: c'était aBarEl par erreur
+  if (bBarEl) bBarEl.style.width = `${bPct}%`;
   if (totEl)  totEl.textContent  = `Total : ${total}`;
 }
 

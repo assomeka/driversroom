@@ -40,6 +40,42 @@
     .loading-inline{display:flex;align-items:center;gap:.6rem;color:#cbd5e1}
     .loading-inline .spinner{width:28px;height:28px;border:3px solid #334155;border-top-color:#38bdf8;border-radius:50%;animation:spin 1s linear infinite}
     @keyframes spin{to{transform:rotate(360deg)}}
+
+    /* Toggle "course joker" */
+    .joker-toggle{
+      display:flex;
+      align-items:center;
+      gap:0.6rem;
+      margin-bottom:12px;
+      padding:0.6rem 0.9rem;
+      border-radius:999px;
+      background:rgba(15,23,42,0.95);
+      border:1px solid #38bdf8;
+      color:#e2e8f0;
+      font-size:0.95rem;
+      box-shadow:0 0 0 1px rgba(15,23,42,0.8),0 8px 20px rgba(15,23,42,0.8);
+    }
+    .joker-toggle label{
+      display:flex;
+      align-items:center;
+      gap:0.5rem;
+      cursor:pointer;
+      margin:0;
+      width:100%;
+    }
+    .joker-toggle input[type="checkbox"]{
+      width:20px;
+      height:20px;
+      transform:scale(1.15);
+      accent-color:#38bdf8;
+      cursor:pointer;
+      flex-shrink:0;
+    }
+    .joker-toggle strong{
+      font-weight:600;
+      color:#e0f2fe;
+    }
+
   </style>
 </head>
 <body>
@@ -157,42 +193,51 @@
         <div id="voteCircuitHost"></div>
       </div>
 
-<!-- Réclamation -->
-<div id="estacup-sub-reclam" class="estacup-subsection hidden">
-  <h4>Réclamation</h4>
+      <!-- Réclamation -->
+      <div id="estacup-sub-reclam" class="estacup-subsection hidden">
+        <h4>Réclamation</h4>
 
-  <p class="muted-note" style="margin-bottom:10px;">
-    Merci de remplir <strong>tous</strong> les champs ci-dessous. Le lien vers la vidéo <strong>YouTube</strong> est obligatoire.
-  </p>
+        <p class="muted-note" style="margin-bottom:10px;">
+          Merci de remplir <strong>tous</strong> les champs ci-dessous. Le lien vers la vidéo <strong>YouTube</strong> est obligatoire.
+        </p>
 
-  <label for="reclamDate">Date de la course :</label>
-  <input id="reclamDate" type="date" />
+        <label for="reclamDate">Date de la course :</label>
+        <input id="reclamDate" type="date" />
 
-  <label for="reclamSplit">Split :</label>
-  <select id="reclamSplit">
-    <option value="">-- Choisir un split --</option>
-    <option value="1">Split 1</option>
-    <option value="2">Split 2</option>
-  </select>
+        <label for="reclamSplit">Split :</label>
+        <select id="reclamSplit">
+          <option value="">-- Choisir un split --</option>
+          <option value="1">Split 1</option>
+          <option value="2">Split 2</option>
+        </select>
 
-  <label for="reclamDesc">Description de l'incident :</label>
-  <textarea id="reclamDesc" placeholder="Décrivez précisément l'incident (tour, virage, pilotes impliqués, etc.)" rows="5"></textarea>
+        <label for="reclamDesc">Description de l'incident :</label>
+        <textarea id="reclamDesc" placeholder="Décrivez précisément l'incident (tour, virage, pilotes impliqués, etc.)" rows="5"></textarea>
 
-  <label for="reclamVideo">Lien de la vidéo YouTube (obligatoire) :</label>
-  <input id="reclamVideo" type="url" placeholder="https://youtu.be/..." />
+        <label for="reclamVideo">Lien de la vidéo YouTube (obligatoire) :</label>
+        <input id="reclamVideo" type="url" placeholder="https://youtu.be/..." />
 
-  <button id="submitReclam">📨 Envoyer la réclamation</button>
+        <button id="submitReclam">📨 Envoyer la réclamation</button>
 
-  <p class="livery-intro" style="margin-top:12px;">
-    ℹ️ <strong>Note :</strong> la décision des commissaires sera visible dans <strong>M-Safety</strong>.
-  </p>
+        <p class="livery-intro" style="margin-top:12px;">
+          ℹ️ <strong>Note :</strong> la décision des commissaires sera visible dans <strong>M-Safety</strong>.
+        </p>
 
-  <div id="reclamHistory" style="margin-top:20px;"></div>
-</div>
+        <div id="reclamHistory" style="margin-top:20px;"></div>
+      </div>
 
-<!-- Classement Pilotes -->
+      <!-- Classement Pilotes -->
       <div id="estacup-sub-rankpilots" class="estacup-subsection hidden">
         <h4>Classement Pilotes</h4>
+        <div class="joker-toggle">
+          <label for="jokerTogglePilots">
+            <input type="checkbox" id="jokerTogglePilots">
+            <span>
+              Classement avec la <strong>course joker</strong>
+              (retrait du <strong>pire total sprint + principale du même round</strong> pour les pilotes ayant disputé toutes les courses)
+            </span>
+          </label>
+        </div>
         <div id="estacupPilotStandings" class="course-box">
           <p>Chargement…</p>
         </div>
@@ -201,6 +246,15 @@
       <!-- Classement Équipes -->
       <div id="estacup-sub-rankteams" class="estacup-subsection hidden">
         <h4>Classement Équipes</h4>
+        <div class="joker-toggle">
+          <label for="jokerToggleTeams">
+            <input type="checkbox" id="jokerToggleTeams">
+            <span>
+              Classement avec la <strong>course joker</strong>
+              (retrait du <strong>pire total d'un round</strong> pour les équipes présentes à tous les rounds)
+            </span>
+          </label>
+        </div>
         <div id="estacupTeamStandings" class="course-box">
           <p>Chargement…</p>
         </div>

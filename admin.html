@@ -6,6 +6,85 @@
   <title>Admin - ESTACUP</title>
   <link rel="stylesheet" href="style.css" />
   <script type="module" src="admin.js" defer></script>
+  <style>
+    /* Résumé des voitures ESTACUP */
+    #estacupCarSummary {
+      margin: 6px 0 10px;
+    }
+    .car-summary-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .car-summary-item {
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid rgba(148, 163, 184, 0.5);
+      font-size: 0.85rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .car-summary-label {
+      opacity: 0.85;
+    }
+    .car-summary-count {
+      font-weight: 600;
+    }
+
+    /* Header carte ESTACUP + pill livrée */
+    .estacup-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .estacup-card-header h4 {
+      margin: 0;
+    }
+    .livery-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.7);
+      background: rgba(15, 23, 42, 0.9);
+      font-size: 0.8rem;
+      white-space: nowrap;
+    }
+    .livery-pill input[type="checkbox"] {
+      accent-color: #22d3ee;
+      transform: scale(1.1);
+    }
+
+    /* Licence pill (Rookie / Challenger / Pro) */
+    .license-pill {
+      margin-left: 4px;
+      min-width: 95px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid #4b5563;
+      background: #020617;
+      color: #e5e7eb;
+      font-size: 0.85rem;
+      text-align: center;
+    }
+    .license-pill-rookie {
+      border-color: #16a34a;
+      color: #bbf7d0;
+    }
+    .license-pill-challenger {
+      border-color: #2563eb;
+      color: #bfdbfe;
+    }
+    .license-pill-pro {
+      border-color: #dc2626;
+      color: #fecaca;
+    }
+  </style>
 </head>
 <body>
   <header class="site-header">
@@ -23,8 +102,7 @@
         <button data-section="incidents">Gestion Incidents</button>
         <button data-section="courses">Liste des Courses</button>
         <button data-section="estacup">Gestion ESTACUP</button>
-        <button data-section="pilots">Gestion Pilotes</button>
-        <!-- 👇 Ajout : onglet Votes -->
+        <!-- 👇 Onglet Votes -->
         <button data-section="votes">Votes</button>
       </nav>
 
@@ -148,68 +226,6 @@
         </div>
       </section>
 
-      <!-- Section Pilotes -->
-      <section id="section-pilots" class="admin-section hidden">
-        <h3>Gestion Pilotes</h3>
-
-        <div class="course-box" style="margin-bottom:16px">
-          <div style="display:grid;gap:10px;grid-template-columns:1fr auto">
-            <input id="pilotSearch" type="text" placeholder="Rechercher (nom, email)"/>
-            <button id="refreshPilots">↻ Rafraîchir</button>
-          </div>
-          <ul id="pilotAdminList" class="pilot-list" style="max-height:300px;overflow:auto;margin-top:10px"></ul>
-        </div>
-
-        <div class="course-box">
-          <h4>Fiche pilote</h4>
-          <div id="pilotFormEmpty" style="color:#94A3B8">Sélectionne un pilote à gauche.</div>
-          <form id="pilotForm" class="hidden">
-            <div class="grid" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-              <div>
-                <label>Prénom</label>
-                <input id="pf_firstName"/>
-              </div>
-              <div>
-                <label>Nom</label>
-                <input id="pf_lastName"/>
-              </div>
-              <div>
-                <label>Email</label>
-                <input id="pf_email" type="email"/>
-              </div>
-              <div>
-                <label>Date de naissance</label>
-                <input id="pf_dob" type="date"/>
-              </div>
-              <div>
-                <label>Licence ID</label>
-                <input id="pf_licenseId"/>
-              </div>
-              <div>
-                <label>Points E-Safety</label>
-                <input id="pf_licensePoints" type="number" min="0" />
-              </div>
-              <div>
-                <label>Classe de licence</label>
-                <select id="pf_licenseClass">
-                  <option value="Pro">Pro</option>
-                  <option value="Challenger">Challenger</option>
-                  <option value="Rookie">Rookie</option>
-                </select>
-              </div>
-              <div>
-                <label>E-Rating (lecture seule)</label>
-                <input id="pf_eloRating" type="number" disabled />
-              </div>
-            </div>
-            <div class="toolbar" style="margin-top:12px;display:flex;gap:10px;flex-wrap:wrap">
-              <button id="pf_save" type="button">💾 Enregistrer</button>
-              <button id="pf_reset" type="button">↩️ Réinitialiser</button>
-            </div>
-          </form>
-        </div>
-      </section>
-      
       <!-- Section Incidents + Réclamations -->
       <section id="section-incidents" class="admin-section hidden">
         <h3>Incidents / Réclamations</h3>
@@ -256,10 +272,12 @@
       <!-- Section ESTACUP -->
       <section id="section-estacup" class="admin-section hidden">
         <h3>Inscriptions ESTACUP</h3>
+        <div id="estacupCarSummary" class="muted"></div>
         <div class="toolbar" style="margin:8px 0 14px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
           <label for="estacupSort" style="white-space:nowrap;">Tri :</label>
           <select id="estacupSort">
             <option value="arrival">Ordre d'arrivée (récent en haut)</option>
+            <option value="updated">Dernière mise à jour</option>
             <option value="name">Nom</option>
             <option value="number">N°</option>
           </select>
@@ -267,7 +285,7 @@
         <div id="estacupList"></div>
       </section>
 
-      <!-- 👇 AJOUT : Section Votes (admin) -->
+      <!-- Section Votes (admin) -->
       <section id="section-votes" class="admin-section hidden">
         <h3>Votes — Résultats</h3>
 
